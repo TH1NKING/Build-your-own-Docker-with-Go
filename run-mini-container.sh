@@ -28,6 +28,8 @@ child_logic() {
   local pidfile="$2"
   local gofile="$3"
   local cont_ip="$4"
+  local host_gw="$5"
+
 
   # 1. 握手阶段
   echo "$$" > "$pidfile"
@@ -82,7 +84,8 @@ child_logic() {
   ip link set "$veth_found" name eth0
   ip link set eth0 up
   ip addr add "$cont_ip" dev eth0
-  ip route add default via "${HOST_IP%%/*}"
+  ip route replace default via "$host_gw" dev eth0
+
 
   ip addr add 127.0.0.1/8 dev lo || true
   ip link set lo up
@@ -178,6 +181,7 @@ trap cleanup EXIT
 echo "Starting container..."
 
 # 前台启动容器
+HOST_GW="${HOST_IP%%/*}"
 unshare --mount --uts --ipc --net --fork \
   bash -c 'child_logic "$@"' -- \
-  "$ROOTFS" "$PIDFILE" "$GOFILE" "$CONT_IP"
+  "$ROOTFS" "$PIDFILE" "$GOFILE" "$CONT_IP" "$HOST_GW"
