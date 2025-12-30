@@ -29,3 +29,5 @@ shell 1.2.1 更新：修复了把宿主机的/dev直接bind mount到容器的$RO
 shell 1.2.2 更新：重写了run container脚本。使用veth使得容器可以和宿主机通信。
 
 shell 1.2.3 更新：net-setup.sh在宿主机运行以启用连接互联网功能。如果需要容器接入互联网，请使用printf "nameserver 1.1.1.1\n" > /etc/resolv.conf启用DNS。
+
+1.3 finial 更新：实现了资源管理（cpu和内存）、镜像分层存储等基本docker功能，并用Go重写逻辑。
