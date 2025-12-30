@@ -27,3 +27,5 @@ shell1.2更新：lo is up and the "cleanup-minicontainer.sh" is useless but I wi
 shell 1.2.1 更新：修复了把宿主机的/dev直接bind mount到容器的$ROOTFS/dev的问题；实现了容器中/dev（tmpfs+必要字符设备节点+devpts）；
 
 shell 1.2.2 更新：重写了run container脚本。使用veth使得容器可以和宿主机通信。
+
+shell 1.2.3 更新：net-setup.sh在宿主机运行以启用连接互联网功能。如果需要容器接入互联网，请使用printf "nameserver 1.1.1.1\n" > /etc/resolv.conf启用DNS。
