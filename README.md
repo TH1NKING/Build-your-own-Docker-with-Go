@@ -22,4 +22,4 @@ shell1.1更新（written by ChatGPT）：
 5) 权限处理更干净：一次 sudo，避免到处 sudo
 你原脚本在多个 mount 点位上单独 sudo。新脚本开头统一检测 EUID，不够就 exec sudo -E "$0" "$@"，后面就都不需要反复 sudo 了（更易读也更少“半失败状态”）。
 
-shell1.2更新：lo is up。
+shell1.2更新：lo is up and the "cleanup-minicontainer.sh" is useless but I will keep it in case someday I will use it or somebody will use it.
