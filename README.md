@@ -1,33 +1,75 @@
-最初版本:用shell+busybox实现了环境隔离，具体为：run-mini-container.sh设置严格模式 & 设定 rootfs 路径、检查 rootfs 是否存在、在宿主机上创建 rootfs 的挂载点目录、在宿主机上把宿主的 /dev bind 到 rootfs 的 /dev、
-在宿主机上把 sysfs 挂到 rootfs 的 /sys、如果 rootfs 的 /proc 已经被挂载过，就先在宿主机卸载、创建一组新的 namespace，然后 chroot 进去跑一个 shell；cleanup-minicontainer.sh定义一个通用卸载函数并按顺序尝试卸载 
-rootfs 里的 proc/sys/dev。
+# Build Your Own Docker with Go
 
-shell1.1更新（written by ChatGPT）：
-1) 不再污染宿主机：退出后基本不需要 cleanup
-你原来的 run-mini-container.sh 在 unshare --mount ... 之前就对 $ROOTFS/dev、$ROOTFS/sys 做了 mount（bind/sysfs）——这发生在宿主机 mount namespace，所以退出容器后挂载还在，只能靠 cleanup-minicontainer.sh 手动卸载。
-新脚本：先 unshare --mount，再 mount。
-结果是：
-容器退出 = mount namespace 结束 = 这些挂载自动消失
-宿主机不会留下 $ROOTFS/dev|sys|proc 的挂载残留
-这就是最直接的“少一堆清理脚本 & 少一堆事故”。
-2) 隔离更“真”：挂载变化不会传播回宿主机
-你现在的方式本质上是“宿主机帮容器准备好 rootfs 的挂载环境”。这不算严格意义的容器挂载隔离。
-新脚本把 mount 全放到容器的 mount namespace，容器里怎么 mount/unmount，只影响容器自己。
-3) /proc 正常可用（PID namespace 下非常关键）
-你原脚本把 mount -t proc proc /proc 注释了，但你用了 --pid --fork。没有 /proc 很多常用命令会异常。
-新脚本会把 proc 挂进 $ROOTFS/proc，chroot 后就是 /proc，容器里的进程视图更正常。
-4) 防止“挂载传播”的坑：mount --make-rprivate /
-这是你原脚本没有做的。某些发行版/场景下，mount 传播（shared/private）会让你出现很诡异的“我明明在容器里 mount，宿主机也跟着变”的现象。
-新脚本在新 namespace 里把 / 设为 rprivate，避免意外传播，稳定性更好。
-5) 权限处理更干净：一次 sudo，避免到处 sudo
-你原脚本在多个 mount 点位上单独 sudo。新脚本开头统一检测 EUID，不够就 exec sudo -E "$0" "$@"，后面就都不需要反复 sudo 了（更易读也更少“半失败状态”）。
+这个仓库以一个可运行的 Linux Runtime Lab 为起点，逐步实现面向 Agent 的安全代码执行平台。当前 Go 与 Shell 实现都是学习和验证 Linux 容器原语的实验代码，不是生产级容器运行时或安全沙箱。
 
-shell1.2更新：lo is up and the "cleanup-minicontainer.sh" is useless but I will keep it in case someday I will use it or somebody will use it.
+> **安全边界：** Runtime Lab 会以 root 权限操作 namespace、OverlayFS、cgroup 和宿主机网络。只应在专用 Linux 虚拟机或其他可丢弃环境中运行；不要用它执行不受信任的代码。
 
-shell 1.2.1 更新：修复了把宿主机的/dev直接bind mount到容器的$ROOTFS/dev的问题；实现了容器中/dev（tmpfs+必要字符设备节点+devpts）；
+## 仓库结构
 
-shell 1.2.2 更新：重写了run container脚本。使用veth使得容器可以和宿主机通信。
+- `cmd/runtime-lab`：Go Runtime Lab 的标准命令入口。
+- `internal/runtimelab`：标准入口与兼容入口共享的实验实现。
+- `with_Go`：保留原有调用方式的兼容入口。
+- `with_shell`：Shell 版对照实验；仅用于教学和行为比较。
+- `tests`：面向公开命令入口的 Linux 验收测试。
+- `docs/adr` 与 `CONTEXT.md`：目标系统的架构决策和上下文文档。
 
-shell 1.2.3 更新：net-setup.sh在宿主机运行以启用连接互联网功能。如果需要容器接入互联网，请使用printf "nameserver 1.1.1.1\n" > /etc/resolv.conf启用DNS。
+## Linux 前置条件
 
-1.3 finial 更新：实现了资源管理（cpu和内存）、镜像分层存储等基本docker功能，并用Go重写逻辑。
+- 构建与测试支持基线是 GitHub-hosted `ubuntu-latest`；其他 Linux 发行版需要提供等价工具。
+- Go 版本以 [`go.mod`](go.mod) 为准。
+- Linux 内核支持 user/mount/PID/network namespace、OverlayFS 和 cgroup v2。
+- 命令行提供 `bash`、`ip`、`iptables`、`mountpoint` 和 `unshare`。
+- 实际启动 Runtime Lab 时需要 root 权限，并在当前工作目录准备 `rootfs/`。
+
+## 构建与验证
+
+在干净的 Linux checkout 根目录运行：
+
+```sh
+make check
+```
+
+该命令依次检查 Go 格式、静态分析、测试、构建和 Shell 语法。也可以分别运行：
+
+```sh
+go vet ./...
+go test ./...
+go build ./...
+bash -n with_shell/*.sh
+```
+
+GitHub Actions 会在 Ubuntu 上对 push 和 pull request 执行同一个 `make check`，因此本地与 CI 使用相同的验收入口。
+
+## 使用 Go Runtime Lab
+
+查看标准入口和兼容入口的参数：
+
+```sh
+go run ./cmd/runtime-lab --help
+go run ./with_Go --help
+```
+
+在已经准备好 `rootfs/` 的专用 Linux 环境中启动实验容器：
+
+```sh
+sudo go run ./cmd/runtime-lab [-m 100M] [-c 20] <IP> [COMMAND...]
+```
+
+例如：
+
+```sh
+sudo go run ./cmd/runtime-lab -m 100M -c 20 10.200.1.2 /bin/sh
+```
+
+运行产生的 `containers/` 和 `rootfs/` 是本地可变状态，不纳入版本控制。
+
+## Shell 对照实验
+
+Shell 版本保留用于观察相同 Linux 原语的组合方式：
+
+```sh
+sudo bash with_shell/net-setup.sh
+sudo bash with_shell/run-mini-container.sh 10.200.1.2 /bin/sh
+```
+
+它没有生产级输入验证、隔离强化或故障恢复保证，不能作为安全边界。

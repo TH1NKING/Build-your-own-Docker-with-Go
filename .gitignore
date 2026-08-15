@@ -17,6 +17,7 @@ todolist.md
 *.pem
 
 # Build and test output
+.cache/
 bin/
 dist/
 coverage/
