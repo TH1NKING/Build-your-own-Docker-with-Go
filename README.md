@@ -12,6 +12,7 @@
 - `with_shell`：Shell 版对照实验；仅用于教学和行为比较。
 - `tests`：面向公开命令入口的 Linux 验收测试。
 - `cmd/profile-bundle`：构建和 root-owned 安装 `python-data-v1` Profile Bundle 的公开工具。
+- `cmd/sandboxd`：Linux 上的特权 Sandbox Supervisor 入口；仅开放受限本地协议，不接受通用宿主机命令或路径。
 - `profiles/python-data-v1`：锁定的 Runtime Profile 输入与候选 System Call Policy。
 - `docs/adr` 与 `CONTEXT.md`：目标系统的架构决策和上下文文档。
 - [`CONTRIBUTORS.md`](CONTRIBUTORS.md)：项目贡献者与协作者署名。
@@ -48,6 +49,8 @@ bash -n with_shell/*.sh
 GitHub Actions 会在 Ubuntu 上对 push 和 pull request 执行同一个 `make check`，因此本地与 CI 使用相同的验收入口。
 
 Profile Bundle 另有一个 Linux root 验收 job：它校验锁定下载、两次可复现构建、root-owned 原子安装、恶意 Bundle 拒绝以及真实 CPython 内容 smoke。格式和命令合同见 [`docs/profile-bundle-v1.md`](docs/profile-bundle-v1.md)。
+
+Sandbox Supervisor 协议测试必须以普通 Linux 用户运行，通过真实 Unix socket 验证版本、封闭 operation 集合、严格消息解析、受信路径和权限边界；协议与 `sandboxd` 启动合同见 [`docs/sandbox-supervisor-protocol-v1.md`](docs/sandbox-supervisor-protocol-v1.md)。真实 User Namespace、`pivot_root` 和 Sandbox 创建属于后续实现，T03 不会返回虚假的创建成功。
 
 ## 使用 Go Runtime Lab
 
