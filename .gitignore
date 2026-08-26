@@ -1,0 +1,29 @@
+# Editor and operating-system files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.swp
+
+# Local notes and conversation exports
+summary_of_MyProject.txt
+todolist.md
+
+# Local secrets
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
+# Build and test output
+bin/
+dist/
+coverage/
+coverage.out
+*.exe
+*.test
+
+# Mutable Runtime Lab state
+**/rootfs/
+**/containers/

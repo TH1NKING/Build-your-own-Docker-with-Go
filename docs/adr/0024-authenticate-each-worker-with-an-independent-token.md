@@ -1,0 +1,3 @@
+# Authenticate each Worker Node with an independent token
+
+The first release authenticates every outbound Worker Node request over certificate-validated HTTPS with an independently generated high-entropy Worker Credential that is shown once, stored only as a digest in PostgreSQL, kept in a permission-restricted Worker file, scoped to Worker operations, and individually expirable, revocable, and rotatable. Dynamic-IP allowlists, shared Worker secrets, custom request-signing protocols, and an initial mTLS certificate authority are rejected; mTLS may later sender-constrain Worker identity when node count or exposure justifies certificate enrollment and rotation.

@@ -1,0 +1,5 @@
+# Expose only the Worker API over public HTTPS
+
+The first-release production deployment uses separate listeners for the Operator and Worker surfaces: the Operator Console and Operator API bind only to loopback and are reached through an operator-managed SSH tunnel or equivalent protected path, while a reverse proxy exposes only the authenticated Worker API on public HTTPS. A home-network Worker Node initiates HTTPS long polls to the Control Plane and requires neither a public address nor an inbound port; PostgreSQL and all other internal interfaces remain private.
+
+Worker Nodes validate either a publicly trusted server certificate or an operator-installed private certificate authority and then authenticate with their independent Worker Credentials under ADR-0024. A mandatory WireGuard, Tailscale, or other VPN overlay is deferred because certificate-validated HTTPS already protects this low-node-count outbound connection and a VPN would add an unrelated operational dependency; deployments may still place the same Worker API behind a private network later without changing its protocol.

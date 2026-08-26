@@ -1,0 +1,3 @@
+# Replace chroot with pivot_root in production
+
+Production Sandboxes make mount propagation recursively private, bind the read-only Runtime Profile as a distinct new root, use `pivot_root`, change directory to `/`, detach the old root, and close every inherited file descriptor except the private Sandbox Init control channel and explicitly required I/O pipes. They mount only namespace-local `/proc`, a minimal device filesystem, bounded `/tmp`, and the Workspace—never host `/sys`, arbitrary devices, or host directories—while the Runtime Lab retains `chroot` solely to demonstrate the difference between path-root changes and mount-root replacement.

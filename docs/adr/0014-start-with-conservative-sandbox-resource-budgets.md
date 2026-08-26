@@ -1,0 +1,3 @@
+# Start with conservative Sandbox Resource Budgets
+
+On the initial 8-vCPU, 8-GiB Worker Node, at most two Sandboxes run concurrently. Configurable first-release defaults grant each Sandbox two CPU cores of quota, 1 GiB memory, no swap, 64 PIDs, a 512 MiB Workspace with at most 5,000 files, one MiB each for captured stdout and stderr, 60 seconds per Execution, and ten cumulative minutes per Agent Run; Worker enforcement rather than post-run inspection terminates processes and refuses writes or output beyond these boundaries, leaving capacity for the operating system, Worker, filesystem cache, cleanup, and upload activity.

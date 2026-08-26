@@ -1,0 +1,3 @@
+# Use PostgreSQL as the state store and Execution queue
+
+The first release self-hosts a conservatively configured PostgreSQL instance beside the trusted Control Plane and uses transactional Execution rows plus row locking, conditional updates, and Execution Leases as the low-throughput queue; Worker Nodes claim work only through the Control Plane's HTTPS long-poll API and never connect to PostgreSQL. Redis, RabbitMQ, Kafka, managed RDS, and transactional-outbox dual writes are deferred until measured worker count, queue contention, routing, replay, caching, or event-stream requirements justify their separate failure modes and operational cost.
