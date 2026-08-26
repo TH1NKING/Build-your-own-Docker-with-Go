@@ -14,6 +14,11 @@
 - `cmd/profile-bundle`：构建和 root-owned 安装 `python-data-v1` Profile Bundle 的公开工具。
 - `profiles/python-data-v1`：锁定的 Runtime Profile 输入与候选 System Call Policy。
 - `docs/adr` 与 `CONTEXT.md`：目标系统的架构决策和上下文文档。
+- [`CONTRIBUTORS.md`](CONTRIBUTORS.md)：项目贡献者与协作者署名。
+
+## 贡献者与协作者
+
+感谢所有帮助这个项目成长的人与协作工具；完整署名见 [`CONTRIBUTORS.md`](CONTRIBUTORS.md)。
 
 ## Linux 前置条件
 
