@@ -1,0 +1,13 @@
+{
+  "schema": "system-call-policy/v1",
+  "profile": "python-data-v1",
+  "target": {
+    "os": "linux",
+    "arch": "amd64"
+  },
+  "default_action": {
+    "action": "errno",
+    "errno": 1
+  },
+  "rules": []
+}

@@ -1,0 +1,51 @@
+{
+  "schema": "profile-build-lock/v1",
+  "profile": "python-data-v1",
+  "target": {
+    "os": "linux",
+    "arch": "amd64"
+  },
+  "python": {
+    "version": "3.14.7",
+    "entrypoint": "/opt/python/bin/python3",
+    "packages": []
+  },
+  "inputs": [
+    {
+      "id": "musl-runtime-loader",
+      "kind": "rootfs-overlay",
+      "version": "alpine-3.22.5-musl-1.2.5-r12",
+      "source": "https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/x86_64/alpine-minirootfs-3.22.5-x86_64.tar.gz",
+      "filename": "alpine-minirootfs-3.22.5-x86_64.tar.gz",
+      "size": 3638276,
+      "digest": "sha256:4b4daa9fe2fc696c4919c4412a4c3d3e770d8fb70292a004a2c72f5096175282",
+      "archive_prefix": "",
+      "destination": "",
+      "include": [
+        "lib/ld-musl-x86_64.so.1"
+      ],
+      "exclude": []
+    },
+    {
+      "id": "python-runtime",
+      "kind": "python-install-only",
+      "version": "3.14.7+20260825",
+      "source": "https://github.com/astral-sh/python-build-standalone/releases/download/20260825/cpython-3.14.7%2B20260825-x86_64-unknown-linux-musl-install_only_stripped.tar.gz",
+      "filename": "cpython-3.14.7+20260825-x86_64-unknown-linux-musl-install_only_stripped.tar.gz",
+      "size": 29011055,
+      "digest": "sha256:22374158b61f9415135614fb7ebdba498a84849921bb5ad025809e925d8bb428",
+      "archive_prefix": "python/",
+      "destination": "opt/python/",
+      "include": [],
+      "exclude": [
+        "bin/pip",
+        "bin/pip3",
+        "bin/pip3.14",
+        "lib/python3.14/ensurepip",
+        "lib/python3.14/site-packages/pip",
+        "lib/python3.14/site-packages/pip-26.2.1.dist-info",
+        "share/terminfo"
+      ]
+    }
+  ]
+}
