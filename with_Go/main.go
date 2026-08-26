@@ -67,9 +67,6 @@ func main() {
 	runParent()
 }
 
-// ==========================================
-// Parent Logic (宿主机逻辑)
-// ==========================================
 func runParent() {
 	// 生成或复用 ID
 	contID := useID
@@ -134,9 +131,6 @@ func runParent() {
 	cleanup(contID, mergedDir)
 }
 
-// ==========================================
-// Child Logic (容器内 Init 逻辑)
-// ==========================================
 func runChild() {
 	// 解析参数
 	// args[0]="child-mode", args[1]=IP, args[2]=RootFS, args[3]=ID, args[4:]=CMD
@@ -150,7 +144,7 @@ func runChild() {
 	// 1. 设置 Hostname
 	must(syscall.Sethostname([]byte("container-" + id)))
 
-	// 2. 挂载 /proc (关键！)
+	// 2. 挂载 /proc
 	// 先把根变成私有挂载，防止污染宿主机
 	must(syscall.Mount("", "/", "", syscall.MS_REC|syscall.MS_PRIVATE, ""))
 
@@ -192,10 +186,6 @@ func runChild() {
 
 	must(syscall.Exec(cmdPath, userCmd, env))
 }
-
-// ==========================================
-// Helpers (辅助函数)
-// ==========================================
 
 func setupCgroups(id string, pid int) {
 	cgDir := filepath.Join(BaseCgroup, id)
@@ -262,16 +252,16 @@ func cleanup(id string, mergedDir string) {
 	// 懒卸载
 	syscall.Unmount(mergedDir, syscall.MNT_DETACH)
 
-	// [修复点] 使用 os.Remove 替代不存在的 os.RemoveDir
+	// 使用 os.Remove 替代不存在的 os.RemoveDir
 	os.Remove(filepath.Join(BaseCgroup, id))
 }
 func waitForInterface(namePrefix string) {
-	// 简单的轮询，等待 veth 别移进来
 	for i := 0; i < 50; i++ {
-		ifaces, _ := os.ReadDir("/sys/class/net")
+		// 读取当前目录下挂载的 sysfs (即 rootfs/sys/class/net)
+		ifaces, _ := os.ReadDir("sys/class/net")
+
 		for _, f := range ifaces {
 			if strings.HasPrefix(f.Name(), "vethc-") {
-				// 找到了！重命名为 eth0
 				exec.Command("ip", "link", "set", f.Name(), "name", "eth0").Run()
 				return
 			}
@@ -296,7 +286,7 @@ func mountTmpfs(target, name string) {
 }
 
 func isMounted(dir string) bool {
-	// 简单检查是否挂载：查看 /proc/mounts 或者调用 mountpoint (这里简单处理)
+	// 简单检查是否挂载：查看 /proc/mounts 或者调用 mountpoint
 	// 真正的实现可以读取 /proc/self/mountinfo
 	cmd := exec.Command("mountpoint", "-q", dir)
 	return cmd.Run() == nil

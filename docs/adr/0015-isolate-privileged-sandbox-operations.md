@@ -1,0 +1,3 @@
+# Isolate privileged Sandbox operations
+
+Production Worker Nodes run the network-facing `worker` as a dedicated unprivileged account and isolate mount, cgroup, namespace, and cleanup operations in a minimal root-owned `sandboxd` Sandbox Supervisor reachable only through a permission-restricted local Unix socket with a closed structured protocol and validated runtime-owned paths. Each Sandbox uses a User Namespace whose internal IDs map to subordinate host IDs, and before a Workload executes the Supervisor sets `no_new_privs`, removes unnecessary capability sets, and installs the Runtime Profile's seccomp policy; a single-process development profile may exist but is not a production configuration.

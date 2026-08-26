@@ -1,0 +1,3 @@
+# Distribute immutable Runtime Profile Bundles
+
+The first release does not implement an OCI registry, image pulls, or layer caching and does not rely on Docker to create runtime roots. The Platform Operator uses version-controlled trusted build scripts to produce immutable Profile Bundles with locked system and Python dependencies, a manifest, Sandbox Init, the System Call Policy, and SHA-256 identities; Worker Nodes install bundles into root-owned storage, verify configured digests before use, and mount them read-only, while Workloads and models may select only operator-approved profile versions and can neither upload nor mutate runtime roots.

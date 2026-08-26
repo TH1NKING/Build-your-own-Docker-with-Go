@@ -1,0 +1,5 @@
+# Serve a lightweight Operator Console
+
+The first release makes a lightweight Web UI the primary Operator Console, served from assets embedded in the Go Control Plane and implemented with HTML, CSS, and minimal JavaScript rather than a separately deployed SPA toolchain. It covers Conversations, streaming model output, Agent Run and Tool Call progress, Attachment upload, Run Artifact retention and download, cancellation, and Worker Node health, while excluding account management, browser-based Model Credential configuration, an interactive Sandbox terminal, and a general-purpose operations dashboard.
+
+The Web UI consumes the same versioned Operator HTTP API exposed for automation and receives ordered Agent Run Events over SSE; task submission is asynchronous, returns an Agent Run identifier, and supports reconnecting from an event cursor plus ordinary HTTP state reads. The UI and Operator API are same-origin and local-only by default under ADR-0025, the remotely reachable Worker API remains a separate authenticated surface, and `agentctl` is limited to operational commands such as schema migration, Worker Credential provisioning, and health diagnosis.

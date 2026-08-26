@@ -1,0 +1,3 @@
+# Keep one Sandbox Init per Agent Run
+
+Each Sandbox starts a small trusted Go `sandbox-init` as PID 1 and keeps it alive for the Agent Run, replacing the current design in which the first Workload replaces PID 1 through `exec`. The Sandbox Init accepts only sequential Execution requests over a private inherited file descriptor, runs Workloads as internal UID 1000 rather than namespace root, reaps children, and reports output and exit state; every Execution is placed in its own child cgroup and all of that cgroup's processes are terminated before another Execution may begin, while loss of Sandbox Init invalidates the Run's Sandbox.

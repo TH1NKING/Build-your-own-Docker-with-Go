@@ -1,0 +1,3 @@
+# Upload only declared Execution outputs
+
+Each `execute_python` Tool Call declares relative output paths, and after Execution the Worker Node uploads only those regular files that resolve safely beneath `/workspace/output`, are not links or special files, remain stable while opened, and satisfy per-file and cumulative Resource Budgets. Undeclared Workspace content remains available to later Executions in the same Agent Run but is never uploaded and is deleted with the Sandbox; verified uploads become temporary Run Artifacts identified by size and digest until the Platform Operator explicitly attaches them to a Conversation.

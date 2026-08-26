@@ -1,0 +1,3 @@
+# Disable networking for production Sandboxes
+
+First-release production Sandboxes always use a `none` Network Policy: model calls, Attachment transfer, and Run Artifact upload occur outside the Sandbox through trusted Control Plane or Worker Node components, and dependencies are supplied in operator-managed root filesystems rather than installed at runtime. The self-developed runtime's network namespace, veth, bridge, and NAT support remains available in an explicitly separate runtime-lab profile for teaching and integration testing, but Workloads and models cannot enable it for production Agent Runs.

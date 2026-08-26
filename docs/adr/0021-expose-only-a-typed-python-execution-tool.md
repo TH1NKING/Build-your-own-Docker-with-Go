@@ -1,0 +1,3 @@
+# Expose only a typed Python Execution tool
+
+The first release exposes one model-facing `execute_python` Tool Call with schema-bounded source code, authorized Attachment identifiers, and bounded standard input. The Control Plane resolves ownership and converts valid calls into an internal Execution using the fixed `python-data-v1` profile, entrypoint, Network Policy, filesystem layout, identity, and Resource Budget; models cannot provide a shell command, host path, environment secret, mount, network mode, UID, resource override, or custom profile, and receive only a structured, bounded Execution Result with explicit terminal reasons and Workspace change metadata.
