@@ -23,3 +23,57 @@ jobs:
 
       - name: Run repository checks
         run: make check
+
+  profile-bundle:
+    name: Profile Bundle
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Download locked Runtime Profile inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_cache="$RUNNER_TEMP/profile-sources"
+          mkdir -p "$source_cache"
+
+          python_archive="$source_cache/cpython-3.14.7+20260825-x86_64-unknown-linux-musl-install_only_stripped.tar.gz"
+          curl --fail --location --retry 3 \
+            --output "$python_archive" \
+            'https://github.com/astral-sh/python-build-standalone/releases/download/20260825/cpython-3.14.7%2B20260825-x86_64-unknown-linux-musl-install_only_stripped.tar.gz'
+          echo "22374158b61f9415135614fb7ebdba498a84849921bb5ad025809e925d8bb428  $python_archive" | sha256sum --check --strict
+
+          musl_archive="$source_cache/alpine-minirootfs-3.22.5-x86_64.tar.gz"
+          curl --fail --location --retry 3 \
+            --output "$musl_archive" \
+            'https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/x86_64/alpine-minirootfs-3.22.5-x86_64.tar.gz'
+          echo "4b4daa9fe2fc696c4919c4412a4c3d3e770d8fb70292a004a2c72f5096175282  $musl_archive" | sha256sum --check --strict
+
+      - name: Build Profile Bundle test commands
+        shell: bash
+        run: |
+          set -euo pipefail
+          go build -o "$RUNNER_TEMP/profile-bundle" ./cmd/profile-bundle
+          go test -c \
+            -tags='profilebundle_root profilebundle_production' \
+            -o "$RUNNER_TEMP/profile-bundle-tests" \
+            ./tests
+
+      - name: Verify Profile Bundle on Linux as root
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n unshare --net env \
+            PROFILE_BUNDLE_CLI="$RUNNER_TEMP/profile-bundle" \
+            PROFILE_BUNDLE_REPOSITORY_ROOT="$GITHUB_WORKSPACE" \
+            PROFILE_BUNDLE_SOURCE_CACHE="$RUNNER_TEMP/profile-sources" \
+            "$RUNNER_TEMP/profile-bundle-tests" \
+            -test.v \
+            -test.run='^(TestProfileBundleInstall|TestPythonDataV1Production)'
