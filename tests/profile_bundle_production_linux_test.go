@@ -5,6 +5,7 @@ package workspace_test
 import (
 	"bytes"
 	"crypto/sha256"
+	"debug/elf"
 	"encoding/hex"
 	"encoding/json"
 	"os"
@@ -20,10 +21,7 @@ func TestPythonDataV1ProductionBuildIsByteReproducible(t *testing.T) {
 	sourceCache := requiredEnvironment(t, "PROFILE_BUNDLE_SOURCE_CACHE")
 
 	temporaryDirectory := t.TempDir()
-	initPath := filepath.Join(temporaryDirectory, "sandbox-init.fixture")
-	if err := os.WriteFile(initPath, []byte("abc"), 0o755); err != nil {
-		t.Fatal("write opaque Sandbox Init fixture:", err)
-	}
+	initPath := productionSandboxInit(t)
 	bundlePaths := []string{
 		filepath.Join(temporaryDirectory, "first.bundle"),
 		filepath.Join(temporaryDirectory, "second.bundle"),
@@ -78,6 +76,7 @@ func TestPythonDataV1ProductionBuildIsByteReproducible(t *testing.T) {
 	wantComponentDigests := map[string]string{
 		"rootfs":             "sha256:cdfacca4d70a2045c924b491e9d7516fbf3c67dbce950b70f1207c204d3a46aa",
 		"system-call-policy": "sha256:6003c746e5e4156c755f1f365ad0f605420c5236231125e97738ee6af54afdc3",
+		"sandbox-init":       "sha256:" + fileSHA256(t, initPath),
 	}
 	for _, component := range manifest.Components {
 		if want, ok := wantComponentDigests[component.Role]; ok {
@@ -101,10 +100,7 @@ func TestPythonDataV1ProductionRuntimeProvidesLockedStandardLibrary(t *testing.T
 	sourceCache := requiredEnvironment(t, "PROFILE_BUNDLE_SOURCE_CACHE")
 
 	temporaryDirectory := t.TempDir()
-	initPath := filepath.Join(temporaryDirectory, "sandbox-init.fixture")
-	if err := os.WriteFile(initPath, []byte("abc"), 0o755); err != nil {
-		t.Fatal("write opaque Sandbox Init fixture:", err)
-	}
+	initPath := productionSandboxInit(t)
 	bundlePath := filepath.Join(temporaryDirectory, "python-data-v1.bundle")
 	build := exec.Command(
 		cliPath, "build",
@@ -135,6 +131,9 @@ func TestPythonDataV1ProductionRuntimeProvidesLockedStandardLibrary(t *testing.T
 	}
 
 	rootfsPath := filepath.Join(storePath, "sha256", bundleDigest, "rootfs")
+	if got, want := fileSHA256(t, filepath.Join(rootfsPath, "sandbox-init")), fileSHA256(t, initPath); got != want {
+		t.Fatalf("installed production Sandbox Init SHA-256 = %q, want built executable %q", got, want)
+	}
 	smoke := strings.Join([]string{
 		"import csv, importlib.util, json, platform, sqlite3",
 		"assert platform.python_version() == '3.14.7'",
@@ -153,6 +152,25 @@ func TestPythonDataV1ProductionRuntimeProvidesLockedStandardLibrary(t *testing.T
 	if string(output) != "profile-smoke-ok\n" {
 		t.Fatalf("production python-data-v1 smoke output = %q, want %q", output, "profile-smoke-ok\n")
 	}
+}
+
+func productionSandboxInit(t *testing.T) string {
+	t.Helper()
+	initPath := requiredEnvironment(t, "PROFILE_BUNDLE_SANDBOX_INIT")
+	executable, err := elf.Open(initPath)
+	if err != nil {
+		t.Fatal("open production Sandbox Init ELF:", err)
+	}
+	defer executable.Close()
+	if executable.Machine != elf.EM_X86_64 {
+		t.Fatal("production Sandbox Init must target linux/amd64")
+	}
+	for _, program := range executable.Progs {
+		if program.Type == elf.PT_INTERP {
+			t.Fatal("production Sandbox Init must be statically linked")
+		}
+	}
+	return initPath
 }
 
 func requiredEnvironment(t *testing.T, name string) string {

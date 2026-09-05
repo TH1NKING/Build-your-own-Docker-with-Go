@@ -10,6 +10,7 @@ if [[ -z "${SANDBOX_TEST_BIN_DIR:-}" ]]; then
   cd -- "$repository_root"
   export CGO_ENABLED=0
   go build -o "$sandbox_bin_dir/sandboxd" ./cmd/sandboxd
+  go build -trimpath -buildvcs=false -ldflags=-buildid= -o "$sandbox_bin_dir/sandbox-init" ./cmd/sandbox-init
   go build -o "$sandbox_bin_dir/profile-bundle" ./cmd/profile-bundle
   go build -o "$sandbox_bin_dir/sandbox-root-probe" ./tests/testdata/sandbox-root-probe
   go test -c -tags='sandbox_root,profilebundle_root' \
@@ -18,7 +19,7 @@ else
   sandbox_bin_dir="$(cd -- "$SANDBOX_TEST_BIN_DIR" && pwd)"
 fi
 
-for binary in sandboxd profile-bundle sandbox-root-probe sandbox-creation-tests; do
+for binary in sandboxd sandbox-init profile-bundle sandbox-root-probe sandbox-creation-tests; do
   [[ -x "$sandbox_bin_dir/$binary" ]] || { echo "Missing executable: $sandbox_bin_dir/$binary" >&2; exit 1; }
 done
 
@@ -35,9 +36,10 @@ exec "${privilege[@]}" unshare --mount --pid --fork --mount-proc --net --propaga
     # Inherited cwd keeps the binaries reachable even when the checkout or
     # supplied bin directory is under the now-covered host /tmp.
     mkdir /tmp/t04-bin
-    cp -- ./sandboxd ./profile-bundle ./sandbox-root-probe ./sandbox-creation-tests /tmp/t04-bin/
+    cp -- ./sandboxd ./sandbox-init ./profile-bundle ./sandbox-root-probe ./sandbox-creation-tests /tmp/t04-bin/
     cd /
     export SANDBOXD_CLI=/tmp/t04-bin/sandboxd
+    export SANDBOX_INIT_CLI=/tmp/t04-bin/sandbox-init
     export PROFILE_BUNDLE_CLI=/tmp/t04-bin/profile-bundle
     export SANDBOX_ROOT_PROBE=/tmp/t04-bin/sandbox-root-probe
     uname -sr

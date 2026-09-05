@@ -7,6 +7,7 @@ operations, process identifiers, or caller-selected isolation settings.
 
 T03 establishes the transport and validation boundary. T04 adds actual
 Sandbox creation when the Platform Operator enables subordinate-ID allocation.
+T05 adds a verified Sandbox Init and sequential `execute_python` requests.
 The default protocol-only mode still returns `operation_unavailable` for a
 valid `create_sandbox` request whose Profile exists.
 
@@ -51,6 +52,14 @@ Internal IDs `0..65535` map to that block; concurrent Sandboxes managed by the
 same Supervisor never share a block. A count of 131,072 therefore permits two
 active Sandboxes. Supplementary host groups are cleared during child startup.
 
+Execution also needs a root-owned writable cgroup v2 directory, selected by
+`--cgroup-root` (default `/sys/fs/cgroup`). The directory must be real and must
+not allow group or other writes. Linux must provide `cgroup.kill` (5.14+).
+The Supervisor creates an exclusive child cgroup for each Execution and
+removes it after its processes exit. The directory is deployment configuration,
+never a request parameter. A missing or unsupported cgroup v2 location returns
+`operation_unavailable` before any Python code starts.
+
 The Platform Operator must reserve these ranges against system accounts,
 other Supervisor instances, and other subordinate-ID users before startup.
 `sandboxd` does not read or update `/etc/subuid` or `/etc/subgid`, or detect
@@ -69,15 +78,17 @@ Each message consists of:
 Control messages are limited to 65,536 bytes. A declared larger request is
 rejected before its payload is read or allocated. Connections have a bounded
 deadline, and the Supervisor serves up to 16 control connections concurrently
-so an incomplete client cannot block unrelated requests. Bulk Workload input,
-output, or file contents do not belong in this protocol.
+so an incomplete client cannot block unrelated requests. T05 permits bounded
+Python source, stdin and output in the control frame; bulk file transfer remains
+outside this protocol. Reading a request has a five-second deadline. Executions
+have a 60-second private transport guard and a 65-second response write deadline.
 
 JSON decoding is strict. Unknown fields, duplicate fields, trailing values,
 invalid UTF-8, missing required fields, and malformed JSON are rejected.
 
 ## Request
 
-The only operation recognized by this protocol version is `create_sandbox`:
+The closed operation set is `create_sandbox` and `execute_python`. Creation:
 
 ```json
 {
@@ -101,6 +112,32 @@ PID, UID, GID, command, environment, mount, Network Policy, or Resource Budget.
 `sandboxd` derives filesystem locations beneath its already-open configured
 roots. Profile symlinks and references that cannot be resolved beneath the
 Profile store are rejected.
+
+Execution requests select only an existing Sandbox and a bounded Python
+Workload; the fixed interpreter is `/opt/python/bin/python3 -I -B -c <source>`:
+
+```json
+{
+  "schema": "sandbox-supervisor-request/v1",
+  "request_id": "req-step-1",
+  "operation": "execute_python",
+  "parameters": {
+    "sandbox_id": "run-001",
+    "execution_id": "step-1",
+    "source": "open('answer.txt', 'w').write('42'); print('saved')",
+    "stdin": ""
+  }
+}
+```
+
+`execution_id` follows the same identifier grammar. `source` is nonempty and
+at most 32 KiB of UTF-8; optional `stdin` is at most 8 KiB. The total encoded
+frame must still fit 64 KiB. An Execution runs as internal UID/GID 1000 with no
+supplementary groups, a fixed environment, and `/workspace/output` as its
+current directory. Only standard input/output/error reach Python. Concurrent
+requests for the same Sandbox are rejected with `sandbox_busy`; they are not
+queued. `execution_id` correlates a result, not an idempotency key: T05 has no
+durable dispatch/result store. Never automatically retry an uncertain request.
 
 ## Response
 
@@ -129,6 +166,9 @@ Stable v1 error codes are:
 - `creation_failed`
 - `sandbox_exists`
 - `identity_range_exhausted`
+- `sandbox_not_found`
+- `sandbox_busy`
+- `execution_failed`
 
 `creation_failed` means the Supervisor could not complete or confirm the
 private bootstrap. `sandbox_exists` rejects an active or pre-existing Sandbox
@@ -150,9 +190,16 @@ A successful creation returns only the opaque Sandbox identifier:
 ```
 
 The response exposes no host PID, path, UID/GID allocation, or private
-bootstrap channel. A successful response means that the trusted bootstrap
-reported completion of root setup; it does not promise indefinite liveness
-or that a Workload can execute.
+bootstrap channel. A successful response means that root setup completed and
+the verified Init entered its private request loop; it does not promise
+indefinite liveness or availability of Execution cgroup resources.
+
+Successful Executions return `execution_id`, `exit_code`, separate `stdout`
+and `stderr`, and `truncated`. A nonzero Python exit is still an Execution
+Result, not a protocol error. T05 retains at most 4 KiB per stream and drains
+the remainder without retaining it; invalid UTF-8 is replaced. These small
+preliminary results fit the current control frame. T11 will implement the full
+configured output budget and Execution Result contract.
 
 ## Creation and lifetime boundary
 
@@ -171,6 +218,17 @@ root. The new root is remounted read-only with `nosuid` and `nodev`, preserving
 applicable existing mount restrictions. `pivot_root(".", ".")` followed by
 detaching the old root needs no writable `put_old` directory in the immutable
 Profile. The temporary staging disappears with the detached old root.
+
+The installer materializes the separately verified Init at `/sandbox-init` and
+reserves empty `/proc`, `/workspace`, and `/tmp` directories. Before creation,
+the Supervisor checks the installed Init's owner, mode, size, SHA-256 and
+non-symlink status against its installed manifest. The bootstrap mounts local
+proc, a private Workspace tmpfs and a private temporary tmpfs, then `exec`s
+`/sandbox-init`, preserving PID 1. Init itself signals readiness. The Profile
+root stays read-only; only `/workspace/output` and `/tmp` are writable by UID
+1000. Workspace (512 MiB, 5002 inodes including scaffolding) and temporary
+storage (16 MiB, 1024 inodes) have conservative fixed caps in this slice;
+configurable policy, exact accounting and Resource Budget outcomes remain T10.
 
 The Supervisor starts the child from an already-open Profile directory on a
 locked OS thread with an unshared `CLONE_FS` context. The inherited current
@@ -195,15 +253,22 @@ only explicitly remapped private handles, and diagnostics always use a pipe
 even when the Supervisor's stderr is a host log file. The Supervisor's own
 runtime descriptors are marked, not forcibly closed.
 
-T04 leaves this trusted PID 1 idle on a lifetime-only pipe. There is no
-Execution operation, shell, or caller-controlled executable. The T05 Sandbox
-Init contract, including sequential Executions and child reaping, is not yet
-implemented. Graceful Supervisor shutdown terminates and waits for its idle
-Sandboxes; creation failures release resources acquired by that attempt, and
-loss of the lifetime pipe causes the idle bootstrap to exit. This is not the
-full T06 lifecycle, restart recovery, or cleanup guarantee for Workloads.
-Workspace mounts, capability reduction, System Call Policy enforcement, and
-Resource Budgets remain subsequent work.
+The Supervisor and Init use inherited request/response pipes. They are marked
+close-on-exec before starting any Workload. A private launcher first waits on
+its own one-use pipe; the Supervisor resolves that direct child's namespace
+PID to the host PID and attaches it to the Execution cgroup before granting
+permission to exec Python. Init waits for the main child and reports its exit.
+The Supervisor then uses `cgroup.kill`, waits for `populated 0`, and asks Init
+to reap adopted descendants and drain output before returning the result.
+Process groups and `setsid` do not let descendants outlive an Execution.
+
+One Init waiter owns `wait4` for both main and adopted children. A broken
+control channel or inconsistent handshake invalidates the Sandbox. Init death
+causes Linux to terminate the remaining PID namespace processes. Graceful
+Supervisor shutdown terminates and waits for its Sandboxes. Full destroy and
+restart reconciliation remain T06; complete mount, capability, System Call
+Policy and configurable Resource Budget enforcement remain T07–T12. T05 does
+not establish the full production security boundary.
 
 ## Verification
 
@@ -229,6 +294,7 @@ The script builds the Supervisor, Profile installer, and trusted conformance
 probe, then runs tests tagged `sandbox_root,profilebundle_root` in an outer
 mount/PID/network namespace with a private proc mount. It supplies absolute
 paths through `SANDBOXD_CLI`, `PROFILE_BUNDLE_CLI`, and `SANDBOX_ROOT_PROBE`.
+`SANDBOX_INIT_CLI` names the real statically linked Init used in these fixtures.
 Test allocations are fixture values for the disposable environment, not
 deployment recommendations.
 
@@ -238,3 +304,17 @@ The fixture deliberately places that probe at the Profile's Python entrypoint;
 it is not CPython and is not a product Execution API. These tests establish
 the checked kernel properties, not a complete security claim for arbitrary
 Workloads. See the [T04 learning guide](learning/t04-sandbox-creation.md).
+
+To exercise real locked CPython through the public Supervisor protocol, first
+download the locked inputs described in [Profile Bundle v1](profile-bundle-v1.md),
+then run:
+
+```sh
+PROFILE_BUNDLE_SOURCE_CACHE=/absolute/locked-source-cache bash tests/run-sandbox-init-linux.sh
+```
+
+This builds the actual Init, rebuilds and installs its Profile Bundle, and
+checks sequential state reuse, internal identity, descendant cleanup,
+concurrent request rejection, output capture and failure behavior. Tests run
+inside disposable namespaces and allocate only a temporary test cgroup subtree.
+See the [T05 learning guide](learning/t05-sandbox-init.md) for the design tradeoffs.

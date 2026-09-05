@@ -5,15 +5,13 @@ package sandboxsupervisor
 import (
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"runtime"
 	"syscall"
 )
 
 // RunBootstrap is the private re-exec entry point of sandboxd. It accepts no
-// paths or commands: the Supervisor supplies only already-open handles. T04
-// keeps this trusted PID 1 alive; Workload execution is implemented by T05.
+// paths or commands: the Supervisor supplies only already-open handles.
 func RunBootstrap() error {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
@@ -21,12 +19,14 @@ func RunBootstrap() error {
 		return errors.New("Sandbox bootstrap requires namespace PID 1 and internal UID zero")
 	}
 	ready := os.NewFile(3, "bootstrap-ready")
-	lifetime := os.NewFile(4, "bootstrap-lifetime")
+	control := os.NewFile(4, "init-requests")
 	profile := os.NewFile(5, "profile-root")
+	responses := os.NewFile(6, "init-responses")
 	defer ready.Close()
-	defer lifetime.Close()
+	defer control.Close()
+	defer responses.Close()
 	defer profile.Close()
-	for _, file := range []*os.File{ready, lifetime} {
+	for _, file := range []*os.File{ready, control, responses} {
 		info, err := file.Stat()
 		if err != nil || info.Mode()&os.ModeNamedPipe == 0 {
 			return errors.New("Sandbox bootstrap requires private inherited pipes")
@@ -87,12 +87,24 @@ func RunBootstrap() error {
 	if err := profile.Close(); err != nil {
 		return err
 	}
-	if _, err := ready.Write([]byte{'R'}); err != nil {
+	// These empty mountpoints are reserved and materialized by the installer.
+	// Their contents exist only in this Sandbox's private mount namespace.
+	if err := syscall.Mount("proc", "/proc", "proc", syscall.MS_NOSUID|syscall.MS_NODEV|syscall.MS_NOEXEC, ""); err != nil {
+		return fmt.Errorf("mount namespace-local process information: %w", err)
+	}
+	if err := syscall.Mount("tmpfs", "/workspace", "tmpfs", syscall.MS_NOSUID|syscall.MS_NODEV|syscall.MS_NOEXEC, "size=512m,nr_inodes=5002,mode=0755"); err != nil {
+		return fmt.Errorf("mount Sandbox Workspace: %w", err)
+	}
+	if err := os.Mkdir("/workspace/output", 0o700); err != nil {
 		return err
 	}
-	ready.Close()
-	// EOF also ends this trusted bootstrap if the Supervisor dies. No caller
-	// command or Workload can enter through this lifetime-only channel.
-	_, err = io.Copy(io.Discard, lifetime)
-	return err
+	if err := os.Chown("/workspace/output", 1000, 1000); err != nil {
+		return err
+	}
+	if err := syscall.Mount("tmpfs", "/tmp", "tmpfs", syscall.MS_NOSUID|syscall.MS_NODEV|syscall.MS_NOEXEC, "size=16m,nr_inodes=1024,mode=0700,uid=1000,gid=1000"); err != nil {
+		return fmt.Errorf("mount Sandbox temporary storage: %w", err)
+	}
+	// exec preserves namespace PID 1 while replacing the bootstrap with the
+	// independently digest-verified Profile Bundle Init. It signals readiness.
+	return syscall.Exec("/sandbox-init", []string{"sandbox-init"}, os.Environ())
 }

@@ -22,6 +22,7 @@ type ServerConfig struct {
 	SubUIDStart  uint
 	SubGIDStart  uint
 	SubIDCount   uint
+	CgroupRoot   string
 }
 
 type requestEnvelope struct {
@@ -37,10 +38,10 @@ type createSandboxParameters struct {
 }
 
 type responseEnvelope struct {
-	Schema    string               `json:"schema"`
-	RequestID string               `json:"request_id"`
-	Result    *CreateSandboxResult `json:"result,omitempty"`
-	Error     *ProtocolError       `json:"error,omitempty"`
+	Schema    string         `json:"schema"`
+	RequestID string         `json:"request_id"`
+	Result    any            `json:"result,omitempty"`
+	Error     *ProtocolError `json:"error,omitempty"`
 }
 
 type server struct {
@@ -137,6 +138,9 @@ func (service *server) handle(connection *net.UnixConn) {
 		service.writeProtocolError(connection, "", ErrorCodeMalformedRequest)
 		return
 	}
+	if request.Operation == OperationExecutePython {
+		_ = connection.SetWriteDeadline(time.Now().Add(65 * time.Second))
+	}
 	service.writeResponse(connection, service.responseForRequest(request))
 }
 
@@ -147,10 +151,14 @@ func (service *server) responseForRequest(request requestEnvelope) responseEnvel
 	if request.Schema != RequestSchemaV1 {
 		return protocolErrorResponse(request.RequestID, ErrorCodeUnsupportedVersion)
 	}
-	if request.Operation != OperationCreateSandbox {
+	switch request.Operation {
+	case OperationCreateSandbox:
+		return service.createSandboxResponse(request.RequestID, request.Parameters)
+	case OperationExecutePython:
+		return service.executePythonResponse(request.RequestID, request.Parameters)
+	default:
 		return protocolErrorResponse(request.RequestID, ErrorCodeUnknownOperation)
 	}
-	return service.createSandboxResponse(request.RequestID, request.Parameters)
 }
 
 func (service *server) createSandboxResponse(requestID string, rawParameters json.RawMessage) responseEnvelope {
@@ -190,6 +198,9 @@ func (service *server) createSandboxResponse(requestID string, rawParameters jso
 		return protocolErrorResponse(requestID, ErrorCodeInvalidReference)
 	}
 	defer rootfs.Close()
+	if err := validateSandboxInit(service.profileStore, digest); err != nil {
+		return protocolErrorResponse(requestID, ErrorCodeInvalidReference)
+	}
 	if code := service.creator.create(parameters.SandboxID, rootfs); code != "" {
 		return protocolErrorResponse(requestID, code)
 	}

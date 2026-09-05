@@ -78,12 +78,24 @@ func TestSandboxCreationDetachesHostRootAndKeepsProfileReadOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	lines := strings.Split(strings.TrimSpace(string(mountinfo)), "\n")
-	if len(lines) != 1 {
-		t.Fatalf("old-root mounts remain visible:\n%s", mountinfo)
+	allowedMounts := map[string]bool{"/": false, "/proc": false, "/workspace": false, "/tmp": false}
+	for _, line := range lines {
+		fields := strings.Fields(line)
+		if len(fields) < 10 {
+			t.Fatalf("invalid mount information: %s", line)
+		}
+		if _, ok := allowedMounts[fields[4]]; !ok || allowedMounts[fields[4]] || strings.Contains(line, "shared:") || strings.Contains(line, "master:") {
+			t.Fatalf("unexpected or non-private Sandbox mount: %s", line)
+		}
+		allowedMounts[fields[4]] = true
+		if fields[4] == "/" && !strings.Contains(","+fields[5]+",", ",ro,") {
+			t.Fatalf("root mount is writable: %s", line)
+		}
 	}
-	fields := strings.Fields(lines[0])
-	if len(fields) < 10 || fields[4] != "/" || !strings.Contains(","+fields[5]+",", ",ro,") || strings.Contains(lines[0], "shared:") || strings.Contains(lines[0], "master:") {
-		t.Fatalf("root mount is not a distinct read-only private mount:\n%s", mountinfo)
+	for mountpoint, seen := range allowedMounts {
+		if !seen {
+			t.Fatalf("missing Sandbox mount %s", mountpoint)
+		}
 	}
 	fdDirectory := filepath.Join("/proc", pid, "fd")
 	fds, err := os.ReadDir(fdDirectory)
@@ -245,6 +257,37 @@ func TestSandboxCreationRejectsRootFilesystemSymlink(t *testing.T) {
 	assertSandboxSupervisorErrorCode(t, response, "invalid_reference")
 }
 
+func TestSandboxCreationRejectsChangedOrLinkedInit(t *testing.T) {
+	for _, mutation := range []string{"changed-bytes", "symlink"} {
+		t.Run(mutation, func(t *testing.T) {
+			fixture, identity := installedSandboxCreationFixture(t)
+			rootfs := filepath.Join(fixture.profileStore, "sha256", strings.TrimPrefix(identity, "sha256:"), "rootfs")
+			initPath := filepath.Join(rootfs, "sandbox-init")
+			if mutation == "symlink" {
+				if err := os.Remove(initPath); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink("../sandbox-init", initPath); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				file, err := os.OpenFile(initPath, os.O_WRONLY, 0)
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, err = file.WriteAt([]byte("BAD!"), 0)
+				file.Close()
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			t.Cleanup(startSandboxSupervisor(t, fixture, "--subuid-start", "200000", "--subgid-start", "300000", "--subid-count", "65536"))
+			response := exchangeSandboxSupervisorMessage(t, fixture.socketPath, createSandboxWireRequest(t, "req-tampered", "run-tampered", identity))
+			assertSandboxSupervisorErrorCode(t, response, "invalid_reference")
+		})
+	}
+}
+
 func TestSandboxCreationFailsClosedWhenKernelRejectsIdentityMapping(t *testing.T) {
 	fixture, identity := installedSandboxCreationFixture(t)
 	// An outer User Namespace containing only ID zero cannot grant the child
@@ -304,7 +347,11 @@ func installedSandboxCreationFixture(t *testing.T) (sandboxSupervisorFixture, st
 		t.Fatalf("SANDBOX_ROOT_PROBE must name the prebuilt conformance fixture: %v", err)
 	}
 	rootfs := writeIndependentRootFSFixture(t, "opt/python/bin/python3", probe)
-	digest := writeIndependentBundleFixtureWithRootFS(t, bundle, validFixtureLock(), validFixturePolicy(), rootfs)
+	init, err := os.ReadFile(os.Getenv("SANDBOX_INIT_CLI"))
+	if err != nil {
+		t.Fatalf("SANDBOX_INIT_CLI must name the real Init: %v", err)
+	}
+	digest := writeIndependentBundleFixtureWithRootFSAndInit(t, bundle, validFixtureLock(), validFixturePolicy(), rootfs, init)
 	command := exec.Command(cli, "install", "--bundle", bundle,
 		"--expected-sha256", digest, "--store", fixture.profileStore)
 	if output, err := command.CombinedOutput(); err != nil {
