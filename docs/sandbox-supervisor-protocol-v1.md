@@ -5,10 +5,10 @@ unprivileged Worker Node and the privileged `sandboxd` process. It is available
 only on Linux and does not expose shell commands, arbitrary host paths, mount
 operations, process identifiers, or caller-selected isolation settings.
 
-This version establishes the transport and validation boundary required by
-T03. T04 implements actual Sandbox creation. Until then, a valid
-`create_sandbox` request whose Profile exists returns `operation_unavailable`
-instead of claiming that an isolated Sandbox was created.
+T03 establishes the transport and validation boundary. T04 adds actual
+Sandbox creation when the Platform Operator enables subordinate-ID allocation.
+The default protocol-only mode still returns `operation_unavailable` for a
+valid `create_sandbox` request whose Profile exists.
 
 ## Trusted startup configuration
 
@@ -31,6 +31,32 @@ it.
 
 `sandboxd` refuses to overwrite a pre-existing file, directory, symlink, or
 active socket at the configured socket path.
+
+Creation additionally requires trusted startup configuration:
+
+```text
+--subuid-start <first-reserved-host-uid>
+--subgid-start <first-reserved-host-gid>
+--subid-count <reserved-ids-in-each-range>
+```
+
+All three values default to zero. All-zero configuration disables creation
+and permits the existing unprivileged protocol tests. Otherwise, `sandboxd`
+must run as root, both starts must be nonzero, and the count must be a positive
+multiple of 65,536. The complete ranges must fit in usable Linux UID/GID
+space; neither host ID zero nor the reserved ID `4294967295` is mapped.
+
+Each active Sandbox reserves a distinct block of 65,536 IDs from each range.
+Internal IDs `0..65535` map to that block; concurrent Sandboxes managed by the
+same Supervisor never share a block. A count of 131,072 therefore permits two
+active Sandboxes. Supplementary host groups are cleared during child startup.
+
+The Platform Operator must reserve these ranges against system accounts,
+other Supervisor instances, and other subordinate-ID users before startup.
+`sandboxd` does not read or update `/etc/subuid` or `/etc/subgid`, or detect
+external allocations. The flags declare an already-reserved allocation;
+they do not make arbitrary host IDs safe to use. The request protocol cannot
+override any of these settings.
 
 ## Framing
 
@@ -100,8 +126,84 @@ Stable v1 error codes are:
 - `request_too_large`
 - `profile_not_found`
 - `operation_unavailable`
+- `creation_failed`
+- `sandbox_exists`
+- `identity_range_exhausted`
+
+`creation_failed` means the Supervisor could not complete or confirm the
+private bootstrap. `sandbox_exists` rejects an active or pre-existing Sandbox
+identifier without replacing it. `identity_range_exhausted` means all
+configured subordinate-ID blocks are reserved by active creations or Sandboxes.
 
 Errors do not echo raw malformed input or configured host paths.
+
+A successful creation returns only the opaque Sandbox identifier:
+
+```json
+{
+  "schema": "sandbox-supervisor-response/v1",
+  "request_id": "req-001",
+  "result": {
+    "sandbox_id": "run-001"
+  }
+}
+```
+
+The response exposes no host PID, path, UID/GID allocation, or private
+bootstrap channel. A successful response means that the trusted bootstrap
+reported completion of root setup; it does not promise indefinite liveness
+or that a Workload can execute.
+
+## Creation and lifetime boundary
+
+The Supervisor opens the selected root-owned, immutable Profile through its
+trusted Profile store. It opens each `sha256/<digest>/rootfs` component without
+following symlinks and checks root ownership and the installer's exact modes:
+`0755` for `sha256`, `0555` for the Profile directory and root filesystem.
+It re-executes its own binary in new user, mount, PID,
+and network namespaces. This private bootstrap accepts inherited handles,
+not caller paths or commands. It runs as namespace PID 1 and internal UID 0,
+which maps to the allocated non-root host ID.
+
+The bootstrap makes mount propagation recursively private, mounts temporary
+staging inside its own namespace, and non-recursively bind-mounts the Profile
+root. The new root is remounted read-only with `nosuid` and `nodev`, preserving
+applicable existing mount restrictions. `pivot_root(".", ".")` followed by
+detaching the old root needs no writable `put_old` directory in the immutable
+Profile. The temporary staging disappears with the detached old root.
+
+The Supervisor starts the child from an already-open Profile directory on a
+locked OS thread with an unshared `CLONE_FS` context. The inherited current
+directory is translated into the child's mount namespace. This avoids
+resolving protected host ancestors under subordinate credentials, and avoids
+using an inherited directory descriptor as a bind source in the parent mount
+namespace. The Supervisor's other threads keep their own current directory.
+The child checks its current directory against the supplied Profile handle
+and closes that handle before reporting readiness.
+
+The private bootstrap environment sets `GOMAXPROCS=1` and
+`GODEBUG=containermaxprocs=0,updatemaxprocs=0` so the Go runtime does not retain
+host cgroup file descriptors while discovering or updating CPU parallelism.
+This is descriptor hygiene, not a Workload Resource Budget. Readiness leaves
+no host directory or regular-file descriptors in the trusted bootstrap;
+private pipes and runtime event descriptors remain.
+
+Before serving, the Supervisor marks inherited descriptors above standard I/O
+close-on-exec. This includes descriptors supplied by a shell or service manager;
+Go's `ExtraFiles` alone is not an inheritance whitelist. The child receives
+only explicitly remapped private handles, and diagnostics always use a pipe
+even when the Supervisor's stderr is a host log file. The Supervisor's own
+runtime descriptors are marked, not forcibly closed.
+
+T04 leaves this trusted PID 1 idle on a lifetime-only pipe. There is no
+Execution operation, shell, or caller-controlled executable. The T05 Sandbox
+Init contract, including sequential Executions and child reaping, is not yet
+implemented. Graceful Supervisor shutdown terminates and waits for its idle
+Sandboxes; creation failures release resources acquired by that attempt, and
+loss of the lifetime pipe causes the idle bootstrap to exit. This is not the
+full T06 lifecycle, restart recovery, or cleanup guarantee for Workloads.
+Workspace mounts, capability reduction, System Call Policy enforcement, and
+Resource Budgets remain subsequent work.
 
 ## Verification
 
@@ -115,3 +217,24 @@ go test ./tests -run '^TestSandboxSupervisor' -count=1
 The suite launches the real `sandboxd` command and communicates over a real
 Unix socket. It fails if the client process is root and does not grant the
 client mount, namespace, or cgroup privileges.
+
+Run the separate privileged creation suite from an ordinary account inside
+a disposable Linux VM, with Go, `sudo`, and util-linux installed:
+
+```sh
+bash tests/run-sandbox-creation-linux.sh
+```
+
+The script builds the Supervisor, Profile installer, and trusted conformance
+probe, then runs tests tagged `sandbox_root,profilebundle_root` in an outer
+mount/PID/network namespace with a private proc mount. It supplies absolute
+paths through `SANDBOXD_CLI`, `PROFILE_BUNDLE_CLI`, and `SANDBOX_ROOT_PROBE`.
+Test allocations are fixture values for the disposable environment, not
+deployment recommendations.
+
+The harness observes real `/proc` mappings, mount topology and descriptors,
+and uses host-side `nsenter` to execute the trusted probe inside the Sandbox.
+The fixture deliberately places that probe at the Profile's Python entrypoint;
+it is not CPython and is not a product Execution API. These tests establish
+the checked kernel properties, not a complete security claim for arbitrary
+Workloads. See the [T04 learning guide](learning/t04-sandbox-creation.md).

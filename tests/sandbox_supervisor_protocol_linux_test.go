@@ -549,6 +549,7 @@ type sandboxSupervisorFixture struct {
 	socketPath   string
 	profileStore string
 	sandboxRoot  string
+	launchPrefix []string
 }
 
 func shortSandboxSupervisorTemporaryDirectory(t *testing.T) string {
@@ -686,7 +687,7 @@ func assertSandboxdRejectsStartup(
 	}
 }
 
-func startSandboxSupervisor(t *testing.T, fixture sandboxSupervisorFixture) func() {
+func startSandboxSupervisor(t *testing.T, fixture sandboxSupervisorFixture, extraArguments ...string) func() {
 	t.Helper()
 
 	commandPath := sandboxdCommandPath(t)
@@ -698,6 +699,11 @@ func startSandboxSupervisor(t *testing.T, fixture sandboxSupervisorFixture) func
 		"--profile-store", fixture.profileStore,
 		"--sandbox-root", fixture.sandboxRoot,
 	)
+	command.Args = append(command.Args, extraArguments...)
+	if len(fixture.launchPrefix) != 0 {
+		arguments := append(append([]string{}, fixture.launchPrefix[1:]...), command.Args...)
+		command = exec.Command(fixture.launchPrefix[0], arguments...)
+	}
 	command.Stdout = &output
 	command.Stderr = &output
 	if err := command.Start(); err != nil {
@@ -737,6 +743,8 @@ func startSandboxSupervisor(t *testing.T, fixture sandboxSupervisorFixture) func
 		case err := <-exited:
 			if err != nil {
 				t.Errorf("sandboxd exited after interrupt: %v\n%s", err, output.String())
+			} else if output.Len() != 0 {
+				t.Logf("sandboxd diagnostics:\n%s", output.String())
 			}
 		case <-time.After(5 * time.Second):
 			_ = command.Process.Kill()

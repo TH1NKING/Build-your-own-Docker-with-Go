@@ -50,7 +50,15 @@ GitHub Actions 会在 Ubuntu 上对 push 和 pull request 执行同一个 `make 
 
 Profile Bundle 另有一个 Linux root 验收 job：它校验锁定下载、两次可复现构建、root-owned 原子安装、恶意 Bundle 拒绝以及真实 CPython 内容 smoke。格式和命令合同见 [`docs/profile-bundle-v1.md`](docs/profile-bundle-v1.md)。
 
-Sandbox Supervisor 协议测试必须以普通 Linux 用户运行，通过真实 Unix socket 验证版本、封闭 operation 集合、严格消息解析、受信路径和权限边界；协议与 `sandboxd` 启动合同见 [`docs/sandbox-supervisor-protocol-v1.md`](docs/sandbox-supervisor-protocol-v1.md)。真实 User Namespace、`pivot_root` 和 Sandbox 创建属于后续实现，T03 不会返回虚假的创建成功。
+Sandbox Supervisor 协议测试必须以普通 Linux 用户运行，通过真实 Unix socket 验证版本、封闭 operation 集合、严格消息解析、受信路径和权限边界。T04 已实现创建真实 Sandbox：配置预留的 subordinate UID/GID 后，`sandboxd` 建立独立 user/mount/PID/network namespace，将 Runtime Profile 作为只读私有根挂载，通过 `pivot_root` 脱离旧根，再返回 `sandbox_id`。三个 subordinate-ID 参数全部为零时保留仅验证协议的模式，创建仍返回 `operation_unavailable`。配置与协议合同见 [`docs/sandbox-supervisor-protocol-v1.md`](docs/sandbox-supervisor-protocol-v1.md)。
+
+在已安装 Go、`sudo` 和 util-linux 的专用、可丢弃 Linux 环境中，以普通用户运行真实创建验收：
+
+```sh
+bash tests/run-sandbox-creation-linux.sh
+```
+
+这个入口构建工具和可信测试探针，再在隔离的 Linux 测试环境中验证身份映射、只读根、旧宿主根不可达和描述符边界。探针由测试端通过 `nsenter` 启动；它不是产品执行接口，也不代表已经执行真实 Python。当前 Sandbox 内只有等待中的可信 bootstrap PID 1；T05 的 Sandbox Init、T06 的完整故障清理和后续安全强化仍未完成，尚不能用于不可信 Workload。实现原理、取舍和实验说明见 [`T04 学习笔记`](docs/learning/t04-sandbox-creation.md)。
 
 ## 使用 Go Runtime Lab
 

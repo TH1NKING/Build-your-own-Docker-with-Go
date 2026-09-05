@@ -19,6 +19,9 @@ type ServerConfig struct {
 	SocketPath   string
 	ProfileStore string
 	SandboxRoot  string
+	SubUIDStart  uint
+	SubGIDStart  uint
+	SubIDCount   uint
 }
 
 type requestEnvelope struct {
@@ -42,11 +45,18 @@ type responseEnvelope struct {
 
 type server struct {
 	profileStore *os.Root
+	creator      *sandboxCreator
 }
 
 const maximumConcurrentControlConnections = 16
 
 func Serve(ctx context.Context, config ServerConfig) error {
+	if err := sealInheritedDescriptors(); err != nil {
+		return err
+	}
+	if err := validateSubordinateIDs(config); err != nil {
+		return err
+	}
 	if err := validateTrustedPaths(config); err != nil {
 		return err
 	}
@@ -60,6 +70,8 @@ func Serve(ctx context.Context, config ServerConfig) error {
 		return err
 	}
 	defer sandboxRoot.Close()
+	creator := newSandboxCreator(ctx, config, sandboxRoot)
+	defer creator.close()
 
 	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: config.SocketPath, Net: "unix"})
 	if err != nil {
@@ -81,7 +93,7 @@ func Serve(ctx context.Context, config ServerConfig) error {
 		}
 	}()
 
-	service := &server{profileStore: profileStore}
+	service := &server{profileStore: profileStore, creator: creator}
 	connectionSlots := make(chan struct{}, maximumConcurrentControlConnections)
 	var handlers sync.WaitGroup
 	defer handlers.Wait()
@@ -170,7 +182,22 @@ func (service *server) createSandboxResponse(requestID string, rawParameters jso
 	}
 	_ = profile.Close()
 
-	return protocolErrorResponse(requestID, ErrorCodeOperationUnavailable)
+	if !service.creator.enabled() {
+		return protocolErrorResponse(requestID, ErrorCodeOperationUnavailable)
+	}
+	rootfs, err := openProfileRootFilesystem(service.profileStore, digest)
+	if err != nil {
+		return protocolErrorResponse(requestID, ErrorCodeInvalidReference)
+	}
+	defer rootfs.Close()
+	if code := service.creator.create(parameters.SandboxID, rootfs); code != "" {
+		return protocolErrorResponse(requestID, code)
+	}
+	return responseEnvelope{
+		Schema:    ResponseSchemaV1,
+		RequestID: requestID,
+		Result:    &CreateSandboxResult{SandboxID: parameters.SandboxID},
+	}
 }
 
 func (service *server) writeResponse(connection *net.UnixConn, response responseEnvelope) {

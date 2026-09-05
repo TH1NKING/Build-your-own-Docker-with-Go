@@ -12,13 +12,16 @@ const (
 type ErrorCode string
 
 const (
-	ErrorCodeProfileNotFound      ErrorCode = "profile_not_found"
-	ErrorCodeUnsupportedVersion   ErrorCode = "unsupported_version"
-	ErrorCodeUnknownOperation     ErrorCode = "unknown_operation"
-	ErrorCodeMalformedRequest     ErrorCode = "malformed_request"
-	ErrorCodeInvalidReference     ErrorCode = "invalid_reference"
-	ErrorCodeRequestTooLarge      ErrorCode = "request_too_large"
-	ErrorCodeOperationUnavailable ErrorCode = "operation_unavailable"
+	ErrorCodeProfileNotFound        ErrorCode = "profile_not_found"
+	ErrorCodeUnsupportedVersion     ErrorCode = "unsupported_version"
+	ErrorCodeUnknownOperation       ErrorCode = "unknown_operation"
+	ErrorCodeMalformedRequest       ErrorCode = "malformed_request"
+	ErrorCodeInvalidReference       ErrorCode = "invalid_reference"
+	ErrorCodeRequestTooLarge        ErrorCode = "request_too_large"
+	ErrorCodeOperationUnavailable   ErrorCode = "operation_unavailable"
+	ErrorCodeCreationFailed         ErrorCode = "creation_failed"
+	ErrorCodeSandboxExists          ErrorCode = "sandbox_exists"
+	ErrorCodeIdentityRangeExhausted ErrorCode = "identity_range_exhausted"
 )
 
 type CreateSandboxRequest struct {
@@ -34,7 +37,9 @@ type CreateSandboxResponse struct {
 	Error     *ProtocolError
 }
 
-type CreateSandboxResult struct{}
+type CreateSandboxResult struct {
+	SandboxID string `json:"sandbox_id"`
+}
 
 type ProtocolError struct {
 	Code ErrorCode `json:"code"`
