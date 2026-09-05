@@ -77,3 +77,19 @@ jobs:
             "$RUNNER_TEMP/profile-bundle-tests" \
             -test.v \
             -test.run='^(TestProfileBundleInstall|TestPythonDataV1Production)'
+
+  sandbox-creation:
+    name: Sandbox creation (real Linux kernel)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Verify Sandbox identity and root isolation
+        run: bash tests/run-sandbox-creation-linux.sh

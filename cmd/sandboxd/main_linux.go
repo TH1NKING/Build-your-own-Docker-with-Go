@@ -22,6 +22,9 @@ func main() {
 }
 
 func run(arguments []string) error {
+	if len(arguments) == 1 && arguments[0] == "--sandbox-bootstrap" {
+		return sandboxsupervisor.RunBootstrap()
+	}
 	flags := flag.NewFlagSet("sandboxd", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
 
@@ -29,6 +32,9 @@ func run(arguments []string) error {
 	flags.StringVar(&config.SocketPath, "socket", "", "absolute path for the restricted Worker socket")
 	flags.StringVar(&config.ProfileStore, "profile-store", "", "absolute path to the root-owned Profile store")
 	flags.StringVar(&config.SandboxRoot, "sandbox-root", "", "absolute path to the runtime-owned Sandbox root")
+	flags.UintVar(&config.SubUIDStart, "subuid-start", 0, "first operator-reserved subordinate host UID")
+	flags.UintVar(&config.SubGIDStart, "subgid-start", 0, "first operator-reserved subordinate host GID")
+	flags.UintVar(&config.SubIDCount, "subid-count", 0, "reserved IDs per UID/GID range, in blocks of 65536; zero disables creation")
 	if err := flags.Parse(arguments); err != nil {
 		return err
 	}
