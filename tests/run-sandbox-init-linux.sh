@@ -14,10 +14,13 @@ if [[ -z "${SANDBOX_TEST_BIN_DIR:-}" ]]; then
   go build -trimpath -buildvcs=false -ldflags=-buildid= -o "$sandbox_bin_dir/sandbox-init" ./cmd/sandbox-init
   go build -o "$sandbox_bin_dir/profile-bundle" ./cmd/profile-bundle
   go test -c -tags='sandbox_root,profilebundle_root' -o "$sandbox_bin_dir/t05-tests" ./tests
+  bundle_build_dir="$(mktemp -d "$sandbox_bin_dir/bundle-XXXXXX")"
   "$sandbox_bin_dir/profile-bundle" build \
     --lock profiles/python-data-v1/profile.lock.json --source-cache "$source_cache" \
     --system-call-policy profiles/python-data-v1/system-call-policy.json \
-    --sandbox-init "$sandbox_bin_dir/sandbox-init" --output "$sandbox_bin_dir/python.bundle"
+    --sandbox-init "$sandbox_bin_dir/sandbox-init" --output "$bundle_build_dir/python.bundle"
+  mv -- "$bundle_build_dir/python.bundle" "$sandbox_bin_dir/python.bundle"
+  rmdir -- "$bundle_build_dir"
 else
   sandbox_bin_dir="$(cd -- "$SANDBOX_TEST_BIN_DIR" && pwd)"
 fi

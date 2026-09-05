@@ -54,7 +54,14 @@ func newExecutionCgroup(directory string) (*executionCgroup, error) {
 		return nil, err
 	}
 	transferred = true
-	return &executionCgroup{parent: parent, group: group, name: name}, nil
+	execution := &executionCgroup{parent: parent, group: group, name: name}
+	// Validate termination support on the empty cgroup before starting even
+	// the trusted launcher. A v2 mount alone does not guarantee cgroup.kill.
+	if err := execution.killAndWait(); err != nil {
+		_ = execution.close()
+		return nil, err
+	}
+	return execution, nil
 }
 
 func (group *executionCgroup) write(name, value string) error {

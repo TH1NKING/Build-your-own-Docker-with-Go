@@ -75,7 +75,7 @@ func RunInit() error {
 			return message.err
 		}
 		request := message.request
-		if request.Action != "start" || request.Source == "" || len(request.Source) > 32<<10 || len(request.Stdin) > 8<<10 {
+		if request.Action != "start" || request.Source == "" || strings.ContainsRune(request.Source, 0) || len(request.Source) > 32<<10 || len(request.Stdin) > 8<<10 {
 			return errors.New("invalid Sandbox Init start request")
 		}
 		if err := executeInitWorkload(request, requests, responses, children); err != nil {

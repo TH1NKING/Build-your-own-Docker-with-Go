@@ -63,7 +63,7 @@ func validateSubordinateIDs(config ServerConfig) error {
 
 // Open each directory without following links. Handles keep trusted roots
 // separate from caller identifiers throughout privileged path resolution.
-func openProfileRootFilesystem(store *os.Root, digest string) (*os.File, error) {
+func openInstalledProfileDirectory(store *os.Root, digest string) (*os.File, error) {
 	const flags = os.O_RDONLY | syscall.O_DIRECTORY | syscall.O_NOFOLLOW | syscall.O_CLOEXEC
 	shard, err := store.OpenFile("sha256", flags, 0)
 	if err != nil {
@@ -78,11 +78,21 @@ func openProfileRootFilesystem(store *os.Root, digest string) (*os.File, error) 
 		return nil, err
 	}
 	profile := os.NewFile(uintptr(profileFD), "installed-profile")
-	defer profile.Close()
 	if err := validateInstalledDirectory(profile, 0o555); err != nil {
+		profile.Close()
 		return nil, err
 	}
-	rootFD, err := syscall.Openat(profileFD, "rootfs", flags, 0)
+	return profile, nil
+}
+
+func openProfileRootFilesystem(store *os.Root, digest string) (*os.File, error) {
+	profile, err := openInstalledProfileDirectory(store, digest)
+	if err != nil {
+		return nil, err
+	}
+	defer profile.Close()
+	const flags = os.O_RDONLY | syscall.O_DIRECTORY | syscall.O_NOFOLLOW | syscall.O_CLOEXEC
+	rootFD, err := syscall.Openat(int(profile.Fd()), "rootfs", flags, 0)
 	if err != nil {
 		return nil, err
 	}

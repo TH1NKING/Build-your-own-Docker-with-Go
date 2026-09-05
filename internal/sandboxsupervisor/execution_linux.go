@@ -22,7 +22,7 @@ type executePythonParameters struct {
 
 func (service *server) executePythonResponse(requestID string, raw json.RawMessage) responseEnvelope {
 	var parameters executePythonParameters
-	if err := decodeStrictJSON(raw, &parameters, "sandbox_id", "execution_id", "source", "stdin"); err != nil || parameters.Source == "" || len(parameters.Source) > 32<<10 || len(parameters.Stdin) > 8<<10 {
+	if err := decodeStrictJSON(raw, &parameters, "sandbox_id", "execution_id", "source", "stdin"); err != nil || parameters.Source == "" || strings.ContainsRune(parameters.Source, 0) || len(parameters.Source) > 32<<10 || len(parameters.Stdin) > 8<<10 {
 		return protocolErrorResponse(requestID, ErrorCodeMalformedRequest)
 	}
 	if !validOpaqueIdentifier(parameters.SandboxID) || !validOpaqueIdentifier(parameters.ExecutionID) {

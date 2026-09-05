@@ -210,6 +210,29 @@ os.write(2, b'y' * 100000)`)
 	}
 }
 
+func TestSandboxExecutionRejectsNulBeforeDisturbingWorkspace(t *testing.T) {
+	fixture, identity := installedSandboxExecutionFixture(t)
+	t.Cleanup(startSandboxSupervisor(t, fixture, "--subuid-start", "200000", "--subgid-start", "300000", "--subid-count", "65536", "--cgroup-root", os.Getenv("SANDBOX_CGROUP_ROOT")))
+	assertSandboxCreated(t, exchangeSandboxSupervisorMessage(t, fixture.socketPath,
+		createSandboxWireRequest(t, "create", "run-invalid", identity)), "run-invalid")
+	first := executeSandboxPython(t, fixture, "run-invalid", "saved", "open('state', 'w').write('42')")
+	if first.ExitCode != 0 {
+		t.Fatalf("prepare state: %+v", first)
+	}
+	payload, err := json.Marshal(map[string]any{
+		"schema": "sandbox-supervisor-request/v1", "request_id": "req-nul", "operation": "execute_python",
+		"parameters": map[string]string{"sandbox_id": "run-invalid", "execution_id": "nul", "source": "print(1)\x00"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertSandboxSupervisorErrorCode(t, exchangeSandboxSupervisorMessage(t, fixture.socketPath, payload), "malformed_request")
+	after := executeSandboxPython(t, fixture, "run-invalid", "after-invalid", "assert open('state').read() == '42'; print('preserved')")
+	if after.ExitCode != 0 || after.Stdout != "preserved\n" {
+		t.Fatalf("invalid request destroyed Workspace: %+v", after)
+	}
+}
+
 type sandboxExecutionResult struct {
 	ExecutionID string `json:"execution_id"`
 	ExitCode    int    `json:"exit_code"`

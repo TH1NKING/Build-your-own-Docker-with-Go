@@ -198,7 +198,7 @@ func (service *server) createSandboxResponse(requestID string, rawParameters jso
 		return protocolErrorResponse(requestID, ErrorCodeInvalidReference)
 	}
 	defer rootfs.Close()
-	if err := validateSandboxInit(service.profileStore, digest); err != nil {
+	if err := validateSandboxInit(service.profileStore, digest, rootfs); err != nil {
 		return protocolErrorResponse(requestID, ErrorCodeInvalidReference)
 	}
 	if code := service.creator.create(parameters.SandboxID, rootfs); code != "" {

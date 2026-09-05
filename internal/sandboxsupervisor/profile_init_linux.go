@@ -16,26 +16,13 @@ import (
 
 // The installed manifest binds the executable inside the root to the verified
 // outer Init component. Each path is resolved through trusted directory handles.
-func validateSandboxInit(store *os.Root, digest string) error {
-	const directoryFlags = os.O_RDONLY | syscall.O_DIRECTORY | syscall.O_NOFOLLOW | syscall.O_CLOEXEC
-	shard, err := store.OpenFile("sha256", directoryFlags, 0)
+func validateSandboxInit(store *os.Root, digest string, rootfs *os.File) error {
+	profile, err := openInstalledProfileDirectory(store, digest)
 	if err != nil {
 		return err
 	}
-	defer shard.Close()
-	if err := validateInstalledDirectory(shard, 0o755); err != nil {
-		return err
-	}
-	profileFD, err := syscall.Openat(int(shard.Fd()), digest, directoryFlags, 0)
-	if err != nil {
-		return err
-	}
-	profile := os.NewFile(uintptr(profileFD), "installed-profile")
 	defer profile.Close()
-	if err := validateInstalledDirectory(profile, 0o555); err != nil {
-		return err
-	}
-	manifestFile, err := openInstalledRegularAt(profileFD, "manifest.json", 0o444, 1<<20)
+	manifestFile, err := openInstalledRegularAt(int(profile.Fd()), "manifest.json", 0o444, 1<<20)
 	if err != nil {
 		return err
 	}
@@ -79,16 +66,7 @@ func validateSandboxInit(store *os.Root, digest string) error {
 	if !strings.HasPrefix(expectedDigest, "sha256:") || len(expectedDigest) != len("sha256:")+64 {
 		return errors.New("installed Profile must declare the Sandbox Init SHA-256")
 	}
-	rootFD, err := syscall.Openat(profileFD, "rootfs", directoryFlags, 0)
-	if err != nil {
-		return err
-	}
-	root := os.NewFile(uintptr(rootFD), "profile-rootfs")
-	defer root.Close()
-	if err := validateInstalledDirectory(root, 0o555); err != nil {
-		return err
-	}
-	initFile, err := openInstalledRegularAt(rootFD, "sandbox-init", 0o555, 64<<20)
+	initFile, err := openInstalledRegularAt(int(rootfs.Fd()), "sandbox-init", 0o555, 64<<20)
 	if err != nil {
 		return err
 	}

@@ -130,8 +130,8 @@ Workload; the fixed interpreter is `/opt/python/bin/python3 -I -B -c <source>`:
 }
 ```
 
-`execution_id` follows the same identifier grammar. `source` is nonempty and
-at most 32 KiB of UTF-8; optional `stdin` is at most 8 KiB. The total encoded
+`execution_id` follows the same identifier grammar. `source` is nonempty,
+contains no NUL byte, and is at most 32 KiB of UTF-8; optional `stdin` is at most 8 KiB. The total encoded
 frame must still fit 64 KiB. An Execution runs as internal UID/GID 1000 with no
 supplementary groups, a fixed environment, and `/workspace/output` as its
 current directory. Only standard input/output/error reach Python. Concurrent
