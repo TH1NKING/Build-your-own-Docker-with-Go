@@ -6,8 +6,9 @@ const (
 	RequestSchemaV1  = "sandbox-supervisor-request/v1"
 	ResponseSchemaV1 = "sandbox-supervisor-response/v1"
 
-	OperationCreateSandbox = "create_sandbox"
-	OperationExecutePython = "execute_python"
+	OperationCreateSandbox  = "create_sandbox"
+	OperationExecutePython  = "execute_python"
+	OperationDestroySandbox = "destroy_sandbox"
 )
 
 type ErrorCode string
@@ -26,7 +27,24 @@ const (
 	ErrorCodeSandboxNotFound        ErrorCode = "sandbox_not_found"
 	ErrorCodeSandboxBusy            ErrorCode = "sandbox_busy"
 	ErrorCodeExecutionFailed        ErrorCode = "execution_failed"
+	ErrorCodeCleanupFailed          ErrorCode = "cleanup_failed"
 )
+
+type DestroySandboxRequest struct {
+	RequestID string
+	SandboxID string
+}
+
+type DestroySandboxResponse struct {
+	Schema    string                `json:"schema"`
+	RequestID string                `json:"request_id"`
+	Result    *DestroySandboxResult `json:"result"`
+	Error     *ProtocolError        `json:"error"`
+}
+
+type DestroySandboxResult struct {
+	SandboxID string `json:"sandbox_id"`
+}
 
 type ExecutePythonRequest struct {
 	RequestID   string

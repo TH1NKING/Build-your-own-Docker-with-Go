@@ -117,27 +117,34 @@ func validateInstalledDirectory(directory *os.File, mode fs.FileMode) error {
 }
 
 type sandboxCreator struct {
-	ctx    context.Context
-	cancel context.CancelFunc
-	config ServerConfig
-	root   *os.Root
-	mu     sync.Mutex
-	active map[string]*createdSandbox
-	wait   sync.WaitGroup
+	ctx     context.Context
+	cancel  context.CancelFunc
+	config  ServerConfig
+	root    *os.Root
+	mu      sync.Mutex
+	active  map[string]*createdSandbox
+	retired map[string]struct{}
+	wait    sync.WaitGroup
 }
 
 type createdSandbox struct {
+	ctx            context.Context
+	cancel         context.CancelFunc
 	identityOffset uint
+	directory      os.FileInfo
 	execution      sync.Mutex
 	process        *os.Process
 	requests       *os.File
 	responses      *os.File
 	done           chan struct{}
+	exited         chan struct{}
+	terminating    bool  // guarded by creator.mu
+	cleanupErr     error // guarded by creator.mu; retryable after done closes
 }
 
 func newSandboxCreator(ctx context.Context, config ServerConfig, root *os.Root) *sandboxCreator {
 	ctx, cancel := context.WithCancel(ctx)
-	return &sandboxCreator{ctx: ctx, cancel: cancel, config: config, root: root, active: make(map[string]*createdSandbox)}
+	return &sandboxCreator{ctx: ctx, cancel: cancel, config: config, root: root, active: make(map[string]*createdSandbox), retired: make(map[string]struct{})}
 }
 
 func (creator *sandboxCreator) enabled() bool { return creator.config.SubIDCount != 0 }
@@ -154,6 +161,9 @@ func (creator *sandboxCreator) reserve(id string) (*createdSandbox, ErrorCode) {
 		return nil, ErrorCodeCreationFailed
 	}
 	if _, exists := creator.active[id]; exists {
+		return nil, ErrorCodeSandboxExists
+	}
+	if _, exists := creator.retired[id]; exists {
 		return nil, ErrorCodeSandboxExists
 	}
 	used := make(map[uint]bool, len(creator.active))
@@ -173,29 +183,60 @@ func (creator *sandboxCreator) reserve(id string) (*createdSandbox, ErrorCode) {
 		}
 		return nil, ErrorCodeCreationFailed
 	}
-	sandbox := &createdSandbox{identityOffset: offset}
+	ctx, cancel := context.WithCancel(creator.ctx)
+	sandbox := &createdSandbox{ctx: ctx, cancel: cancel, identityOffset: offset, done: make(chan struct{}), exited: make(chan struct{})}
+	sandbox.directory, _ = creator.root.Lstat(id)
 	creator.active[id] = sandbox
 	return sandbox, ""
 }
 
-func (creator *sandboxCreator) release(id string) {
+func (creator *sandboxCreator) release(id string, sandbox *createdSandbox, retire bool) error {
 	creator.mu.Lock()
 	defer creator.mu.Unlock()
-	// Only remove the empty directory this creation owns. Never recurse
-	// into an unexpected tree or remove a pre-existing Sandbox identifier.
-	_ = creator.root.Remove(id)
-	delete(creator.active, id)
+	return creator.releaseLocked(id, sandbox, retire)
 }
 
-func (creator *sandboxCreator) create(id string, profile *os.File) ErrorCode {
+func (creator *sandboxCreator) releaseLocked(id string, sandbox *createdSandbox, retire bool) error {
+	// Only remove the empty directory this creation owns. Never recurse
+	// into an unexpected tree or remove a pre-existing Sandbox identifier.
+	info, err := creator.root.Lstat(id)
+	if err == nil {
+		if sandbox.directory == nil || !info.IsDir() || !os.SameFile(info, sandbox.directory) {
+			err = errors.New("Sandbox runtime directory was replaced")
+		} else {
+			err = creator.root.Remove(id)
+		}
+	}
+	if errors.Is(err, fs.ErrNotExist) {
+		err = nil
+	}
+	sandbox.cleanupErr = err
+	if err != nil {
+		// Keep the failed cleanup and identity reservation observable so a
+		// retry cannot falsely acknowledge success or reuse uncertain state.
+		fmt.Fprintln(os.Stderr, "Sandbox cleanup:", err)
+		return err
+	}
+	delete(creator.active, id)
+	if retire {
+		creator.retired[id] = struct{}{}
+	}
+	return err
+}
+
+func (creator *sandboxCreator) create(operation *controlOperation, id string, profile *os.File) ErrorCode {
 	sandbox, code := creator.reserve(id)
 	if code != "" {
 		return code
 	}
+	operation.own(sandbox)
 	transferred := false
 	defer func() {
 		if !transferred {
-			creator.release(id)
+			sandbox.cancel()
+			creator.release(id, sandbox, false)
+			close(sandbox.exited)
+			close(sandbox.done)
 		}
 	}()
 	readyReader, readyWriter, err := os.Pipe()
@@ -227,7 +268,7 @@ func (creator *sandboxCreator) create(id string, profile *os.File) ErrorCode {
 
 	// Namespace construction happens before exec, so no goroutine in the
 	// network-facing Supervisor ever changes its own namespaces or root.
-	command := exec.CommandContext(creator.ctx, "/proc/self/exe", "--sandbox-bootstrap")
+	command := exec.CommandContext(sandbox.ctx, "/proc/self/exe", "--sandbox-bootstrap")
 	// Go's container-aware GOMAXPROCS otherwise keeps host cgroup files open
 	// across pivot_root. These trusted bootstrap settings close those handles
 	// at runtime startup, before readiness. This is not a Workload CPU budget.
@@ -261,16 +302,24 @@ func (creator *sandboxCreator) create(id string, profile *os.File) ErrorCode {
 	sandbox.process = command.Process
 	sandbox.requests = requestWriter
 	sandbox.responses = responseReader
-	sandbox.done = make(chan struct{})
 	creator.mu.Unlock()
 	creator.wait.Add(1)
 	go func() {
 		defer creator.wait.Done()
 		_ = command.Wait()
-		close(sandbox.done)
+		sandbox.cancel()
+		creator.mu.Lock()
+		sandbox.terminating = true
+		creator.mu.Unlock()
+		close(sandbox.exited)
 		requestWriter.Close()
 		responseReader.Close()
-		creator.release(id)
+		// An in-flight Execution must finish using the inherited channels and
+		// its existing cgroup cleanup before destruction can be acknowledged.
+		sandbox.execution.Lock()
+		defer sandbox.execution.Unlock()
+		creator.release(id, sandbox, true)
+		close(sandbox.done)
 	}()
 	return ""
 }
