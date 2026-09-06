@@ -69,6 +69,8 @@ func TestSandboxExecutionInitLossInvalidatesStateAndTerminatesWorkload(t *testin
 		t.Fatalf("dead Sandbox remained executable: %+v, %v", response, err)
 	}
 	// A replacement Agent Run gets a new Sandbox and no previous Workspace.
+	assertSandboxSupervisorErrorCode(t, exchangeSandboxSupervisorMessage(t, fixture.socketPath,
+		createSandboxWireRequest(t, "create-stale", "run-lost", identity)), "sandbox_exists")
 	assertSandboxCreated(t, exchangeSandboxSupervisorMessage(t, fixture.socketPath,
 		createSandboxWireRequest(t, "create-replacement", "run-replacement", identity)), "run-replacement")
 	replacement := executeSandboxPython(t, fixture, "run-replacement", "replacement", "import os; assert not os.path.exists('old-state'); print('fresh')")

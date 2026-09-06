@@ -8,6 +8,8 @@ operations, process identifiers, or caller-selected isolation settings.
 T03 establishes the transport and validation boundary. T04 adds actual
 Sandbox creation when the Platform Operator enables subordinate-ID allocation.
 T05 adds a verified Sandbox Init and sequential `execute_python` requests.
+T06 adds explicit `destroy_sandbox`, request abandonment cleanup, and terminal
+identifier protection within one Supervisor lifetime.
 The default protocol-only mode still returns `operation_unavailable` for a
 valid `create_sandbox` request whose Profile exists.
 
@@ -88,7 +90,8 @@ invalid UTF-8, missing required fields, and malformed JSON are rejected.
 
 ## Request
 
-The closed operation set is `create_sandbox` and `execute_python`. Creation:
+The closed operation set is `create_sandbox`, `execute_python`, and
+`destroy_sandbox`. Creation:
 
 ```json
 {
@@ -139,9 +142,37 @@ requests for the same Sandbox are rejected with `sandbox_busy`; they are not
 queued. `execution_id` correlates a result, not an idempotency key: T05 has no
 durable dispatch/result store. Never automatically retry an uncertain request.
 
+Destruction accepts only the opaque Sandbox identifier:
+
+```json
+{
+  "schema": "sandbox-supervisor-request/v1",
+  "request_id": "req-destroy",
+  "operation": "destroy_sandbox",
+  "parameters": { "sandbox_id": "run-001" }
+}
+```
+
+The corresponding Go client method is `Client.DestroySandbox`. Its successful
+result contains `sandbox_id`. Destruction terminates an active Execution along
+with its Sandbox; it does not preserve the Workspace for reuse. Concurrent or
+repeated destruction is idempotent. An unknown identifier acknowledges absence
+without looking up or deleting a filesystem path, so pre-existing unowned
+directories remain untouched. Protocol-only mode returns `operation_unavailable`.
+
+During an in-flight creation or Execution, EOF (including `CloseWrite`), extra
+request bytes, or a failed response write abandons the operation. Only after
+acquiring its Sandbox may a request cancel that Sandbox. Rejected duplicates,
+invalid requests, and `sandbox_busy` clients cannot cancel another operation.
+Once a complete response has been written, normal socket closure leaves a live
+Sandbox available for another Execution. Clients must keep both directions
+open until receiving the complete response. Successful writing confirms local
+delivery to the socket; it cannot prove the remote application consumed the
+response. Callers must explicitly destroy a Sandbox after their Agent Run ends.
+
 ## Response
 
-Every decodable request receives a v1 response envelope containing exactly one
+Every completed request on a connected client receives a v1 response containing exactly one
 of `result` or `error`:
 
 ```json
@@ -169,13 +200,23 @@ Stable v1 error codes are:
 - `sandbox_not_found`
 - `sandbox_busy`
 - `execution_failed`
+- `cleanup_failed`
 
 `creation_failed` means the Supervisor could not complete or confirm the
-private bootstrap. `sandbox_exists` rejects an active or pre-existing Sandbox
+private bootstrap. `sandbox_exists` rejects an active, retired, or pre-existing Sandbox
 identifier without replacing it. `identity_range_exhausted` means all
 configured subordinate-ID blocks are reserved by active creations or Sandboxes.
 
 Errors do not echo raw malformed input or configured host paths.
+
+`cleanup_failed` means an owned runtime directory could not be safely removed.
+The Supervisor retains the failed cleanup and its identity reservation. It
+never recursively deletes an unexpected tree or deletes a substituted directory.
+After the Platform Operator repairs the filesystem condition, repeating
+`destroy_sandbox` retries the cleanup. A successful destruction reply waits for
+Init reaping, completion of any in-flight Execution cleanup, closure of inherited
+channels, and removal of the owned temporary directory. Private mounts and
+namespaces disappear with their final processes and handles.
 
 A successful creation returns only the opaque Sandbox identifier:
 
@@ -269,10 +310,20 @@ Process groups and `setsid` do not let descendants outlive an Execution.
 One Init waiter owns `wait4` for both main and adopted children. A broken
 control channel or inconsistent handshake invalidates the Sandbox. Init death
 causes Linux to terminate the remaining PID namespace processes. Graceful
-Supervisor shutdown terminates and waits for its Sandboxes. Full destroy and
-restart reconciliation remain T06; complete mount, capability, System Call
-Policy and configurable Resource Budget enforcement remain T07–T12. T05 does
-not establish the full production security boundary.
+Supervisor shutdown closes pending clients, terminates Sandboxes, and waits for
+their cleanup. Creation failures unwind only acquired resources; a failed
+creation that never reached readiness may be retried after clean rollback.
+Once a Sandbox reached readiness, its identifier is retired on termination.
+Later creation using that identifier returns `sandbox_exists`; execution returns
+`sandbox_not_found`. A failed cleanup keeps the identifier unavailable as well.
+
+Retired identifiers are held in memory for this Supervisor lifetime. Clients
+must choose globally fresh Sandbox IDs, including across Supervisor restarts.
+T06 does not persist or reconstruct Sandbox state, reconcile crash leftovers,
+or promise cross-restart idempotency. It introduces no cgroup Resource Budget
+or crash-recovery contract; existing per-Execution cgroup cleanup is retained.
+Complete mount, capability, System Call Policy and configurable Resource Budget
+enforcement remain T07–T12. This is not the complete production security boundary.
 
 ## Verification
 
@@ -319,6 +370,11 @@ PROFILE_BUNDLE_SOURCE_CACHE=/absolute/locked-source-cache bash tests/run-sandbox
 
 This builds the actual Init, rebuilds and installs its Profile Bundle, and
 checks sequential state reuse, internal identity, descendant cleanup,
-concurrent request rejection, output capture and failure behavior. Tests run
+concurrent request rejection, output capture and failure behavior. T06 also checks
+idempotent and concurrent destruction, in-flight client disconnection, Init loss,
+shutdown with incomplete clients, failed cleanup retries, and real kernel failures
+at successive creation stages. Tests run
 inside disposable namespaces and allocate only a temporary test cgroup subtree.
 See the [T05 learning guide](learning/t05-sandbox-init.md) for the design tradeoffs.
+The [T06 learning guide](learning/t06-sandbox-lifecycle.md) explains lifecycle
+ownership, cancellation, cleanup ordering, and a complete client example.

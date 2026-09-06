@@ -20,7 +20,7 @@ type executePythonParameters struct {
 	Stdin       string `json:"stdin"`
 }
 
-func (service *server) executePythonResponse(requestID string, raw json.RawMessage) responseEnvelope {
+func (service *server) executePythonResponse(operation *controlOperation, requestID string, raw json.RawMessage) responseEnvelope {
 	var parameters executePythonParameters
 	if err := decodeStrictJSON(raw, &parameters, "sandbox_id", "execution_id", "source", "stdin"); err != nil || parameters.Source == "" || strings.ContainsRune(parameters.Source, 0) || len(parameters.Source) > 32<<10 || len(parameters.Stdin) > 8<<10 {
 		return protocolErrorResponse(requestID, ErrorCodeMalformedRequest)
@@ -31,17 +31,17 @@ func (service *server) executePythonResponse(requestID string, raw json.RawMessa
 	if !service.creator.enabled() {
 		return protocolErrorResponse(requestID, ErrorCodeOperationUnavailable)
 	}
-	result, code := service.creator.execute(parameters)
+	result, code := service.creator.execute(operation, parameters)
 	if code != "" {
 		return protocolErrorResponse(requestID, code)
 	}
 	return responseEnvelope{Schema: ResponseSchemaV1, RequestID: requestID, Result: result}
 }
 
-func (creator *sandboxCreator) execute(parameters executePythonParameters) (*ExecutePythonResult, ErrorCode) {
+func (creator *sandboxCreator) execute(operation *controlOperation, parameters executePythonParameters) (*ExecutePythonResult, ErrorCode) {
 	creator.mu.Lock()
 	sandbox := creator.active[parameters.SandboxID]
-	if sandbox == nil || sandbox.process == nil {
+	if sandbox == nil || sandbox.process == nil || sandbox.terminating || sandbox.ctx.Err() != nil {
 		creator.mu.Unlock()
 		return nil, ErrorCodeSandboxNotFound
 	}
@@ -51,8 +51,9 @@ func (creator *sandboxCreator) execute(parameters executePythonParameters) (*Exe
 		return nil, ErrorCodeSandboxBusy
 	}
 	defer sandbox.execution.Unlock()
+	operation.own(sandbox)
 	select {
-	case <-sandbox.done:
+	case <-sandbox.exited:
 		return nil, ErrorCodeSandboxNotFound
 	default:
 	}
@@ -67,7 +68,7 @@ func (creator *sandboxCreator) execute(parameters executePythonParameters) (*Exe
 			// PID 1 loss tears down the whole PID namespace. No next Execution
 			// is allowed after an uncertain handshake or failed cleanup.
 			_ = sandbox.process.Kill()
-			<-sandbox.done
+			<-sandbox.exited
 		}
 		if err := group.close(); err != nil {
 			fmt.Fprintln(os.Stderr, "Execution cgroup cleanup:", err)

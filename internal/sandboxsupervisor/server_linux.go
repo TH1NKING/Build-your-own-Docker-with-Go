@@ -52,6 +52,8 @@ type server struct {
 const maximumConcurrentControlConnections = 16
 
 func Serve(ctx context.Context, config ServerConfig) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	if err := sealInheritedDescriptors(); err != nil {
 		return err
 	}
@@ -97,7 +99,10 @@ func Serve(ctx context.Context, config ServerConfig) error {
 	service := &server{profileStore: profileStore, creator: creator}
 	connectionSlots := make(chan struct{}, maximumConcurrentControlConnections)
 	var handlers sync.WaitGroup
-	defer handlers.Wait()
+	defer func() {
+		cancel()
+		handlers.Wait()
+	}()
 	for {
 		connection, err := listener.AcceptUnix()
 		if err != nil {
@@ -112,6 +117,8 @@ func Serve(ctx context.Context, config ServerConfig) error {
 			go func() {
 				defer handlers.Done()
 				defer func() { <-connectionSlots }()
+				stopClosing := context.AfterFunc(ctx, func() { _ = connection.Close() })
+				defer stopClosing()
 				service.handle(connection)
 			}()
 		default:
@@ -141,10 +148,19 @@ func (service *server) handle(connection *net.UnixConn) {
 	if request.Operation == OperationExecutePython {
 		_ = connection.SetWriteDeadline(time.Now().Add(65 * time.Second))
 	}
-	service.writeResponse(connection, service.responseForRequest(request))
+	operation := beginControlOperation(service.creator.ctx, connection)
+	response := service.responseForRequest(operation, request)
+	// Serialize successful delivery with disconnect handling. A client that
+	// closes immediately after reading the response must not cancel a Sandbox
+	// already handed back for later sequential Executions.
+	operation.mu.Lock()
+	delivered := operation.ctx.Err() == nil && service.writeResponse(connection, response) == nil
+	operation.finished = true
+	operation.mu.Unlock()
+	operation.complete(delivered)
 }
 
-func (service *server) responseForRequest(request requestEnvelope) responseEnvelope {
+func (service *server) responseForRequest(operation *controlOperation, request requestEnvelope) responseEnvelope {
 	if request.Schema == "" || !validOpaqueIdentifier(request.RequestID) || request.Operation == "" || len(request.Parameters) == 0 {
 		return protocolErrorResponse(request.RequestID, ErrorCodeMalformedRequest)
 	}
@@ -153,15 +169,17 @@ func (service *server) responseForRequest(request requestEnvelope) responseEnvel
 	}
 	switch request.Operation {
 	case OperationCreateSandbox:
-		return service.createSandboxResponse(request.RequestID, request.Parameters)
+		return service.createSandboxResponse(operation, request.RequestID, request.Parameters)
 	case OperationExecutePython:
-		return service.executePythonResponse(request.RequestID, request.Parameters)
+		return service.executePythonResponse(operation, request.RequestID, request.Parameters)
+	case OperationDestroySandbox:
+		return service.destroySandboxResponse(request.RequestID, request.Parameters)
 	default:
 		return protocolErrorResponse(request.RequestID, ErrorCodeUnknownOperation)
 	}
 }
 
-func (service *server) createSandboxResponse(requestID string, rawParameters json.RawMessage) responseEnvelope {
+func (service *server) createSandboxResponse(operation *controlOperation, requestID string, rawParameters json.RawMessage) responseEnvelope {
 	var parameters createSandboxParameters
 	if err := decodeStrictJSON(rawParameters, &parameters, "sandbox_id", "profile_identity"); err != nil || parameters.SandboxID == "" || parameters.ProfileIdentity == "" {
 		return protocolErrorResponse(requestID, ErrorCodeMalformedRequest)
@@ -201,7 +219,7 @@ func (service *server) createSandboxResponse(requestID string, rawParameters jso
 	if err := validateSandboxInit(service.profileStore, digest, rootfs); err != nil {
 		return protocolErrorResponse(requestID, ErrorCodeInvalidReference)
 	}
-	if code := service.creator.create(parameters.SandboxID, rootfs); code != "" {
+	if code := service.creator.create(operation, parameters.SandboxID, rootfs); code != "" {
 		return protocolErrorResponse(requestID, code)
 	}
 	return responseEnvelope{
@@ -211,12 +229,12 @@ func (service *server) createSandboxResponse(requestID string, rawParameters jso
 	}
 }
 
-func (service *server) writeResponse(connection *net.UnixConn, response responseEnvelope) {
+func (service *server) writeResponse(connection *net.UnixConn, response responseEnvelope) error {
 	payload, err := json.Marshal(response)
 	if err != nil {
-		return
+		return err
 	}
-	_ = writeFrame(connection, payload)
+	return writeFrame(connection, payload)
 }
 
 func (service *server) writeProtocolError(connection *net.UnixConn, requestID string, code ErrorCode) {
