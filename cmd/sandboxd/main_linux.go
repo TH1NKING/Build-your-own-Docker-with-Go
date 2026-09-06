@@ -32,6 +32,7 @@ func run(arguments []string) error {
 	flags.StringVar(&config.SocketPath, "socket", "", "absolute path for the restricted Worker socket")
 	flags.StringVar(&config.ProfileStore, "profile-store", "", "absolute path to the root-owned Profile store")
 	flags.StringVar(&config.SandboxRoot, "sandbox-root", "", "absolute path to the runtime-owned Sandbox root")
+	flags.StringVar(&config.CgroupRoot, "cgroup-root", "/sys/fs/cgroup", "root-owned writable cgroup v2 directory for Execution membership")
 	flags.UintVar(&config.SubUIDStart, "subuid-start", 0, "first operator-reserved subordinate host UID")
 	flags.UintVar(&config.SubGIDStart, "subgid-start", 0, "first operator-reserved subordinate host GID")
 	flags.UintVar(&config.SubIDCount, "subid-count", 0, "reserved IDs per UID/GID range, in blocks of 65536; zero disables creation")

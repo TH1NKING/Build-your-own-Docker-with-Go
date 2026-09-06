@@ -1,4 +1,4 @@
-.PHONY: build check fmt-check shell-check test test-sandbox-creation vet
+.PHONY: build check fmt-check shell-check test test-sandbox-creation test-sandbox-init vet
 
 GO_FILES := $(shell find . -type f -name '*.go' -not -path './.git/*' -not -path './.cache/*')
 
@@ -24,6 +24,10 @@ build:
 shell-check:
 	bash -n with_shell/*.sh
 	bash -n tests/run-sandbox-creation-linux.sh
+	bash -n tests/run-sandbox-init-linux.sh
 
 test-sandbox-creation:
 	bash tests/run-sandbox-creation-linux.sh
+
+test-sandbox-init:
+	bash tests/run-sandbox-init-linux.sh

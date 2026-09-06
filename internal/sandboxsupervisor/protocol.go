@@ -7,6 +7,7 @@ const (
 	ResponseSchemaV1 = "sandbox-supervisor-response/v1"
 
 	OperationCreateSandbox = "create_sandbox"
+	OperationExecutePython = "execute_python"
 )
 
 type ErrorCode string
@@ -22,7 +23,33 @@ const (
 	ErrorCodeCreationFailed         ErrorCode = "creation_failed"
 	ErrorCodeSandboxExists          ErrorCode = "sandbox_exists"
 	ErrorCodeIdentityRangeExhausted ErrorCode = "identity_range_exhausted"
+	ErrorCodeSandboxNotFound        ErrorCode = "sandbox_not_found"
+	ErrorCodeSandboxBusy            ErrorCode = "sandbox_busy"
+	ErrorCodeExecutionFailed        ErrorCode = "execution_failed"
 )
+
+type ExecutePythonRequest struct {
+	RequestID   string
+	SandboxID   string
+	ExecutionID string
+	Source      string
+	Stdin       string
+}
+
+type ExecutePythonResponse struct {
+	Schema    string               `json:"schema"`
+	RequestID string               `json:"request_id"`
+	Result    *ExecutePythonResult `json:"result"`
+	Error     *ProtocolError       `json:"error"`
+}
+
+type ExecutePythonResult struct {
+	ExecutionID string `json:"execution_id"`
+	ExitCode    int    `json:"exit_code"`
+	Stdout      string `json:"stdout"`
+	Stderr      string `json:"stderr"`
+	Truncated   bool   `json:"truncated"`
+}
 
 type CreateSandboxRequest struct {
 	RequestID       string
@@ -31,10 +58,10 @@ type CreateSandboxRequest struct {
 }
 
 type CreateSandboxResponse struct {
-	Schema    string
-	RequestID string
-	Result    *CreateSandboxResult
-	Error     *ProtocolError
+	Schema    string               `json:"schema"`
+	RequestID string               `json:"request_id"`
+	Result    *CreateSandboxResult `json:"result"`
+	Error     *ProtocolError       `json:"error"`
 }
 
 type CreateSandboxResult struct {

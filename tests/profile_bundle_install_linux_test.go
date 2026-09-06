@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"syscall"
 	"testing"
 	"time"
@@ -59,6 +60,28 @@ func TestProfileBundleInstallPublishesVerifiedRootOwnedProfile(t *testing.T) {
 	}
 	if stat.Uid != 0 || stat.Gid != 0 {
 		t.Fatalf("installed manifest ownership = %d:%d, want 0:0", stat.Uid, stat.Gid)
+	}
+	initPath := filepath.Join(installedPath, "rootfs", "sandbox-init")
+	initBytes, err := os.ReadFile(initPath)
+	if err != nil || string(initBytes) != "abc" {
+		t.Fatalf("installed root Sandbox Init = %q, err=%v, want verified component abc", initBytes, err)
+	}
+	for _, name := range []string{"sandbox-init", "proc", "workspace", "tmp"} {
+		info, err := os.Lstat(filepath.Join(installedPath, "rootfs", name))
+		if err != nil {
+			t.Fatalf("inspect reserved root path %s: %v", name, err)
+		}
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		if !ok || stat.Uid != 0 || stat.Gid != 0 || info.Mode().Perm() != 0o555 {
+			t.Fatalf("reserved root path %s must be root-owned mode 0555: %#v", name, info)
+		}
+		if name == "sandbox-init" {
+			if !info.Mode().IsRegular() {
+				t.Fatal("installed Sandbox Init must be a regular file")
+			}
+		} else if entries, err := os.ReadDir(filepath.Join(installedPath, "rootfs", name)); err != nil || len(entries) != 0 {
+			t.Fatalf("reserved mountpoint %s must be an empty directory: entries=%#v err=%v", name, entries, err)
+		}
 	}
 
 	writeAttempt := exec.Command(
@@ -108,6 +131,47 @@ func TestProfileBundleInstallIsIdempotentForTheSameDigest(t *testing.T) {
 	}
 	if len(installed) != 1 || installed[0].Name() != bundleDigest {
 		t.Fatalf("content-addressed Profile store entries = %#v, want only %q", installed, bundleDigest)
+	}
+}
+
+func TestProfileBundleInstallRejectsReservedSandboxRootPaths(t *testing.T) {
+	for _, reserved := range []string{"sandbox-init", "proc", "workspace", "tmp"} {
+		for _, kind := range []string{"file", "descendant", "symlink"} {
+			t.Run(reserved+"/"+kind, func(t *testing.T) {
+				name := reserved
+				if kind == "descendant" {
+					name += "/payload"
+				}
+				names := []string{"opt/python/bin/python3", name}
+				sort.Strings(names)
+				var archive bytes.Buffer
+				writer := tar.NewWriter(&archive)
+				for _, entryName := range names {
+					contents := []byte("fixture")
+					header := &tar.Header{
+						Name: entryName, Mode: 0o555, Size: int64(len(contents)),
+						Uid: 0, Gid: 0, ModTime: time.Unix(0, 0).UTC(),
+						Typeflag: tar.TypeReg, Format: tar.FormatPAX,
+					}
+					if entryName == name && kind == "symlink" {
+						header.Typeflag = tar.TypeSymlink
+						header.Linkname = "opt"
+						header.Size = 0
+						contents = nil
+					}
+					if err := writer.WriteHeader(header); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := writer.Write(contents); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := writer.Close(); err != nil {
+					t.Fatal(err)
+				}
+				assertRootFSRejectedWithoutPublish(t, archive.Bytes())
+			})
+		}
 	}
 }
 
@@ -586,7 +650,11 @@ func writeIndependentRootFSEntry(t *testing.T, header *tar.Header, contents []by
 
 func writeIndependentBundleFixtureWithRootFS(t *testing.T, bundlePath string, lock, policy, rootfs []byte) string {
 	t.Helper()
-	init := []byte("abc")
+	return writeIndependentBundleFixtureWithRootFSAndInit(t, bundlePath, lock, policy, rootfs, []byte("abc"))
+}
+
+func writeIndependentBundleFixtureWithRootFSAndInit(t *testing.T, bundlePath string, lock, policy, rootfs, init []byte) string {
+	t.Helper()
 
 	type fixtureComponent struct {
 		role       string

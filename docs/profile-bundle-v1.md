@@ -2,9 +2,9 @@
 
 Profile Bundle v1 is the published build and installation contract for the
 `python-data-v1` Runtime Profile. It is intentionally narrow: the format binds
-one locked Linux root filesystem, one externally supplied Sandbox Init, and one
-System Call Policy. It does not define Sandbox Init behavior or enforce the
-System Call Policy.
+one locked Linux root filesystem, one separately built Sandbox Init, and one
+System Call Policy. The production Init is built from `cmd/sandbox-init`; the
+Bundle format binds its bytes without enforcing the System Call Policy.
 
 ## Trust and identity
 
@@ -73,6 +73,20 @@ renames the identity back into staging and removes it before reporting failure;
 an additional rollback failure is reported explicitly as an uncertain host
 filesystem failure.
 
+The installed root also contains `/sandbox-init`, copied from the verified
+outer Init component with mode `0555`, and empty root-owned `0555` directories
+at `/proc`, `/workspace`, and `/tmp`. These four paths and every path beneath
+them are reserved: a root-filesystem archive that occupies any of them is
+rejected. The Init copy and mountpoints are materialized in staging before
+publication; they do not change the independently verified `rootfs.tar`
+component digest. Reinstallation verifies the complete materialized tree.
+
+Before creation, the Sandbox Supervisor verifies the installed Init's
+ownership, mode, size, and SHA-256 against its manifest component using
+directory handles. Bootstrap mounts the Profile root read-only and enters
+the bundled `/sandbox-init` as namespace PID 1. The reserved directories
+allow private runtime mounts without making the Profile root writable.
+
 Version 1 bounds one source artifact to 256 MiB, one root-filesystem file to
 256 MiB, the normalized root filesystem to 1 GiB and 100,000 entries, and paths
 to 4,096 bytes with 255-byte segments. These format-safety bounds are distinct
@@ -110,11 +124,14 @@ their sizes and SHA-256 values before use. Building itself performs no network
 access:
 
 ```text
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+  -trimpath -buildvcs=false -o sandbox-init ./cmd/sandbox-init
+
 profile-bundle build \
   --lock profiles/python-data-v1/profile.lock.json \
   --source-cache <verified-source-cache> \
   --system-call-policy profiles/python-data-v1/system-call-policy.json \
-  --sandbox-init <externally-supplied-init> \
+  --sandbox-init ./sandbox-init \
   --output python-data-v1.bundle
 ```
 
@@ -139,3 +156,6 @@ those properties are required CI checks on Ubuntu.
 CI downloads and verifies the locked inputs before entering a new network
 namespace. Both production builds and the chroot content smoke therefore run
 without network access and assert reviewed rootfs and Policy component digests.
+They include the actual statically linked Init and verify its component and
+installed-root identities. A further real-kernel test runs two sequential
+Python Executions through that Init and verifies shared Workspace state.

@@ -707,6 +707,21 @@ func extractRootFS(stageRoot *os.Root, entrypoint string) error {
 	if err := validateInstalledEntrypoint(root, entrypoint); err != nil {
 		return err
 	}
+	// These paths belong to the installed Sandbox layout. Keep them separate
+	// from rootfs.tar so runtime dependencies retain their independent digest.
+	initBytes, err := stageRoot.ReadFile("sandbox-init")
+	if err != nil {
+		return fmt.Errorf("read verified Sandbox Init for installed root: %w", err)
+	}
+	if err := writeInstalledBytes(root, "sandbox-init", initBytes, 0o555); err != nil {
+		return fmt.Errorf("materialize verified Sandbox Init in installed root: %w", err)
+	}
+	for _, name := range []string{"proc", "workspace", "tmp"} {
+		if err := root.Mkdir(name, 0o700); err != nil {
+			return fmt.Errorf("create reserved Sandbox mountpoint %q: %w", name, err)
+		}
+		directories[name] = struct{}{}
+	}
 	if err := makeDirectoriesReadOnly(root, directories); err != nil {
 		return err
 	}

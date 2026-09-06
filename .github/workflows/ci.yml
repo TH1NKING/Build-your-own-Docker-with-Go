@@ -61,6 +61,8 @@ jobs:
         run: |
           set -euo pipefail
           go build -o "$RUNNER_TEMP/profile-bundle" ./cmd/profile-bundle
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -buildvcs=false -ldflags=-buildid= \
+            -o "$RUNNER_TEMP/sandbox-init" ./cmd/sandbox-init
           go test -c \
             -tags='profilebundle_root profilebundle_production' \
             -o "$RUNNER_TEMP/profile-bundle-tests" \
@@ -74,9 +76,14 @@ jobs:
             PROFILE_BUNDLE_CLI="$RUNNER_TEMP/profile-bundle" \
             PROFILE_BUNDLE_REPOSITORY_ROOT="$GITHUB_WORKSPACE" \
             PROFILE_BUNDLE_SOURCE_CACHE="$RUNNER_TEMP/profile-sources" \
+            PROFILE_BUNDLE_SANDBOX_INIT="$RUNNER_TEMP/sandbox-init" \
             "$RUNNER_TEMP/profile-bundle-tests" \
             -test.v \
             -test.run='^(TestProfileBundleInstall|TestPythonDataV1Production)'
+
+      - name: Verify sequential Python Executions through Sandbox Init
+        shell: bash
+        run: PROFILE_BUNDLE_SOURCE_CACHE="$RUNNER_TEMP/profile-sources" bash tests/run-sandbox-init-linux.sh
 
   sandbox-creation:
     name: Sandbox creation (real Linux kernel)

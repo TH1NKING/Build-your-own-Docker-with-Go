@@ -63,7 +63,7 @@ func validateSubordinateIDs(config ServerConfig) error {
 
 // Open each directory without following links. Handles keep trusted roots
 // separate from caller identifiers throughout privileged path resolution.
-func openProfileRootFilesystem(store *os.Root, digest string) (*os.File, error) {
+func openInstalledProfileDirectory(store *os.Root, digest string) (*os.File, error) {
 	const flags = os.O_RDONLY | syscall.O_DIRECTORY | syscall.O_NOFOLLOW | syscall.O_CLOEXEC
 	shard, err := store.OpenFile("sha256", flags, 0)
 	if err != nil {
@@ -78,11 +78,21 @@ func openProfileRootFilesystem(store *os.Root, digest string) (*os.File, error) 
 		return nil, err
 	}
 	profile := os.NewFile(uintptr(profileFD), "installed-profile")
-	defer profile.Close()
 	if err := validateInstalledDirectory(profile, 0o555); err != nil {
+		profile.Close()
 		return nil, err
 	}
-	rootFD, err := syscall.Openat(profileFD, "rootfs", flags, 0)
+	return profile, nil
+}
+
+func openProfileRootFilesystem(store *os.Root, digest string) (*os.File, error) {
+	profile, err := openInstalledProfileDirectory(store, digest)
+	if err != nil {
+		return nil, err
+	}
+	defer profile.Close()
+	const flags = os.O_RDONLY | syscall.O_DIRECTORY | syscall.O_NOFOLLOW | syscall.O_CLOEXEC
+	rootFD, err := syscall.Openat(int(profile.Fd()), "rootfs", flags, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -118,6 +128,11 @@ type sandboxCreator struct {
 
 type createdSandbox struct {
 	identityOffset uint
+	execution      sync.Mutex
+	process        *os.Process
+	requests       *os.File
+	responses      *os.File
+	done           chan struct{}
 }
 
 func newSandboxCreator(ctx context.Context, config ServerConfig, root *os.Root) *sandboxCreator {
@@ -189,14 +204,24 @@ func (creator *sandboxCreator) create(id string, profile *os.File) ErrorCode {
 	}
 	defer readyReader.Close()
 	defer readyWriter.Close()
-	lifeReader, lifeWriter, err := os.Pipe()
+	requestReader, requestWriter, err := os.Pipe()
 	if err != nil {
 		return ErrorCodeCreationFailed
 	}
-	defer lifeReader.Close()
+	defer requestReader.Close()
 	defer func() {
 		if !transferred {
-			lifeWriter.Close()
+			requestWriter.Close()
+		}
+	}()
+	responseReader, responseWriter, err := os.Pipe()
+	if err != nil {
+		return ErrorCodeCreationFailed
+	}
+	defer responseWriter.Close()
+	defer func() {
+		if !transferred {
+			responseReader.Close()
 		}
 	}()
 
@@ -207,7 +232,7 @@ func (creator *sandboxCreator) create(id string, profile *os.File) ErrorCode {
 	// across pivot_root. These trusted bootstrap settings close those handles
 	// at runtime startup, before readiness. This is not a Workload CPU budget.
 	command.Env = []string{"GOMAXPROCS=1", "GODEBUG=containermaxprocs=0,updatemaxprocs=0"}
-	command.ExtraFiles = []*os.File{readyWriter, lifeReader, profile}
+	command.ExtraFiles = []*os.File{readyWriter, requestReader, profile, responseWriter}
 	// Force an exec-managed pipe even when the Supervisor logs to a host file.
 	command.Stderr = struct{ io.Writer }{os.Stderr}
 	command.SysProcAttr = &syscall.SysProcAttr{
@@ -222,7 +247,8 @@ func (creator *sandboxCreator) create(id string, profile *os.File) ErrorCode {
 		return ErrorCodeCreationFailed
 	}
 	readyWriter.Close()
-	lifeReader.Close()
+	requestReader.Close()
+	responseWriter.Close()
 	_ = readyReader.SetReadDeadline(time.Now().Add(3 * time.Second))
 	var ready [1]byte
 	if _, err := io.ReadFull(readyReader, ready[:]); err != nil || ready[0] != 'R' {
@@ -231,11 +257,19 @@ func (creator *sandboxCreator) create(id string, profile *os.File) ErrorCode {
 		return ErrorCodeCreationFailed
 	}
 	transferred = true
+	creator.mu.Lock()
+	sandbox.process = command.Process
+	sandbox.requests = requestWriter
+	sandbox.responses = responseReader
+	sandbox.done = make(chan struct{})
+	creator.mu.Unlock()
 	creator.wait.Add(1)
 	go func() {
 		defer creator.wait.Done()
-		defer lifeWriter.Close()
 		_ = command.Wait()
+		close(sandbox.done)
+		requestWriter.Close()
+		responseReader.Close()
 		creator.release(id)
 	}()
 	return ""
