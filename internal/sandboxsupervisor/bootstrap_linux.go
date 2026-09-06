@@ -70,6 +70,13 @@ func RunBootstrap() error {
 	if err := syscall.Mount("", newRoot, "", flags, ""); err != nil {
 		return fmt.Errorf("make Profile mount read-only: %w", err)
 	}
+	// User-namespace proc mounts need an existing fully visible proc instance.
+	// Mount the new PID namespace's proc before detaching the inherited root;
+	// afterwards the old proc is gone and kernels enforcing that check deny it.
+	// This is a fresh proc mount, never a bind of the host's process view.
+	if err := syscall.Mount("proc", newRoot+"/proc", "proc", syscall.MS_NOSUID|syscall.MS_NODEV|syscall.MS_NOEXEC, ""); err != nil {
+		return fmt.Errorf("mount namespace-local process information: %w", err)
+	}
 	if err := syscall.Chdir(newRoot); err != nil {
 		return fmt.Errorf("enter Profile mount: %w", err)
 	}
@@ -89,9 +96,6 @@ func RunBootstrap() error {
 	}
 	// These empty mountpoints are reserved and materialized by the installer.
 	// Their contents exist only in this Sandbox's private mount namespace.
-	if err := syscall.Mount("proc", "/proc", "proc", syscall.MS_NOSUID|syscall.MS_NODEV|syscall.MS_NOEXEC, ""); err != nil {
-		return fmt.Errorf("mount namespace-local process information: %w", err)
-	}
 	if err := syscall.Mount("tmpfs", "/workspace", "tmpfs", syscall.MS_NOSUID|syscall.MS_NODEV|syscall.MS_NOEXEC, "size=512m,nr_inodes=5002,mode=0755"); err != nil {
 		return fmt.Errorf("mount Sandbox Workspace: %w", err)
 	}

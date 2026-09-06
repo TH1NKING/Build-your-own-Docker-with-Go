@@ -28,6 +28,8 @@ func TestSandboxExecutionKeepsInitAndWorkspaceAcrossSequentialPython(t *testing.
 	first := executeSandboxPython(t, fixture, "run-sequential", "first", `import os
 assert os.getuid() == 1000 and os.getgid() == 1000
 assert os.getppid() == 1
+assert os.readlink('/proc/self') == str(os.getpid())
+assert open('/proc/1/comm').read().strip() == 'sandbox-init'
 open('answer.txt', 'w').write('42')
 print('first-ok')`)
 	if first.ExitCode != 0 || first.Stdout != "first-ok\n" {

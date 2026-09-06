@@ -216,3 +216,4 @@ T06 还需补完整失败清理、生命周期和重启恢复；T07–T12 还需
 审查中的一个具体教训是：源码字符串里的 NUL 字节不能直接放进进程启动参数。原实现会让 `StartProcess` 失败并退出 Init，连带销毁 Workspace。回归测试先复现了这个错误；修复后，Supervisor 在分发前返回 `malformed_request`，下一次合法执行仍能读取已有文件。这说明要区分“不合法的 Workload 输入”和“可信控制进程失效”。
 
 另一项修复是在空的 Execution cgroup 上预先确认 `cgroup.kill` 与状态读取可用。仅识别出 cgroup v2 挂载，还不足以确认当前内核提供了整个执行流程需要的接口。提前检查能让不支持的部署在运行 Python 前失败。
+2026-09-06 的 GitHub Linux 6.17 验收还发现了挂载顺序问题：先脱离旧根、再挂载 proc，会让内核在检查 user namespace 可见的 proc 实例时返回 `EPERM`。修复为：在旧根仍可见时，将当前 Sandbox PID namespace 的全新 proc 挂到新根的 `/proc`，随后切根并脱离旧根。这里没有把宿主 proc 绑定进 Sandbox；测试另外检查 `/proc/self` 和 `/proc/1/comm`，确认看到的是 Sandbox 的进程身份。这也是保留不同 Linux 环境验收的价值。规则依据见 [Linux proc 挂载限制](https://www.kernel.org/doc/html/latest/filesystems/proc.html#mount-restrictions)。

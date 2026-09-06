@@ -215,7 +215,11 @@ which maps to the allocated non-root host ID.
 The bootstrap makes mount propagation recursively private, mounts temporary
 staging inside its own namespace, and non-recursively bind-mounts the Profile
 root. The new root is remounted read-only with `nosuid` and `nodev`, preserving
-applicable existing mount restrictions. `pivot_root(".", ".")` followed by
+applicable existing mount restrictions. A fresh proc filesystem for the child's
+PID namespace is mounted at the new root's `/proc` before detaching the old
+root, while the inherited proc is still visible for the kernel's user-namespace
+mount checks. It never binds the host proc view into the Sandbox.
+`pivot_root(".", ".")` followed by
 detaching the old root needs no writable `put_old` directory in the immutable
 Profile. The temporary staging disappears with the detached old root.
 
