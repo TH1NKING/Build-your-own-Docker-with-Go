@@ -77,6 +77,7 @@ const (
 	ExecutionExited      ExecutionTerminalReason = "exited"
 	ExecutionMemoryLimit ExecutionTerminalReason = "memory_limit"
 	ExecutionPIDLimit    ExecutionTerminalReason = "pids_limit"
+	ExecutionTimedOut    ExecutionTerminalReason = "timed_out"
 )
 
 type ExecutionResourceUsage struct {

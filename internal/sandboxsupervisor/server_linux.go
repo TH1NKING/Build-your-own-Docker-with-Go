@@ -149,11 +149,11 @@ func (service *server) handle(connection *net.UnixConn) {
 		service.writeProtocolError(connection, "", ErrorCodeMalformedRequest)
 		return
 	}
-	if request.Operation == OperationExecutePython {
-		_ = connection.SetWriteDeadline(time.Now().Add(65 * time.Second))
-	}
 	operation := beginControlOperation(service.creator.ctx, connection)
 	response := service.responseForRequest(operation, request)
+	// Response delivery has its own bounded window, regardless of the
+	// configured Execution duration or time spent cleaning its descendants.
+	_ = connection.SetWriteDeadline(time.Now().Add(5 * time.Second))
 	// Serialize successful delivery with disconnect handling. A client that
 	// closes immediately after reading the response must not cancel a Sandbox
 	// already handed back for later sequential Executions.

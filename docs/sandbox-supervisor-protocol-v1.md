@@ -74,6 +74,7 @@ Trusted Resource Budget flags (defaults shown) are:
 --memory-bytes 1073741824
 --swap-bytes 0
 --pids-limit 64
+--execution-timeout 1m
 ```
 
 CPU uses a fixed 100,000-microsecond period; 2000 millicores produces
@@ -81,6 +82,9 @@ CPU uses a fixed 100,000-microsecond period; 2000 millicores produces
 or Execution duration. CPU values must be at least 10 millicores and fit the
 quota conversion. Memory must be positive, swap nonnegative, and both must be
 whole memory pages; PID count must be positive. Invalid budgets fail startup.
+Execution timeout is a positive Go duration (for example `500ms` or `75s`);
+zero and negative durations are rejected. It is trusted startup policy, never
+a Worker request or Workload override.
 Budgets include Init and Workload tasks (including threads), and surviving
 Workspace tmpfs charges remain under the same parent across Executions.
 Very small valid policies may be insufficient to start or keep Init alive;
@@ -106,8 +110,10 @@ rejected before its payload is read or allocated. Connections have a bounded
 deadline, and the Supervisor serves up to 16 control connections concurrently
 so an incomplete client cannot block unrelated requests. T05 permits bounded
 Python source, stdin and output in the control frame; bulk file transfer remains
-outside this protocol. Reading a request has a five-second deadline. Executions
-have a 60-second private transport guard and a 65-second response write deadline.
+outside this protocol. Reading a request has a five-second deadline. Writing a
+response has a separate five-second window beginning when the result is ready.
+Neither window supplies the Execution deadline. Init startup and final
+reap/readiness handshakes have separate five-second transport guards.
 
 JSON decoding is strict. Unknown fields, duplicate fields, trailing values,
 invalid UTF-8, missing required fields, and malformed JSON are rejected.
@@ -313,6 +319,39 @@ resource reason with `exit_code=-1`, empty streams and `truncated=true` to
 indicate unavailable output/status; that Sandbox is invalidated and torn down.
 Usable Init state and complete cleanup are required for sequential reuse.
 
+T12 adds `timed_out`. The Supervisor establishes one monotonic deadline just
+before sending `run` to release the trusted launcher, including Python startup
+and all subsequent Workload activity. It defaults to 60 seconds and does not
+depend on the client connection's deadline or reset on output. Trusted launcher
+preparation uses the separate startup guard. The deadline initiates termination;
+the response also waits for bounded process cleanup and Init acknowledgement,
+so it is not a real-time guarantee of RPC completion at exactly that instant.
+
+On expiry, the Supervisor kills only the Execution cgroup, waits for no live
+descendants, consumes `exited`, completes `reap`/`ready`, and removes the child
+cgroup before allowing another Execution. Init and Workspace survive this
+successful timeout cleanup. Continuous output, `setsid`, and detached descendants
+do not extend the deadline. The private response pipe's startup deadline is
+cleared while the Workload runs; termination starts a fresh five-second exit
+guard, and the final reap handshake gets its own guard. There is exactly one
+reader for `exited`; an error path interrupts and joins it before returning.
+
+If a complete `exited` read is already available when the deadline branch runs,
+it is consumed as normal completion. Otherwise the Supervisor records its
+timeout decision before terminating the group. This is an observation rule,
+not a reconstruction of an exact kernel exit timestamp. Final classification
+uses `memory_limit`, then `pids_limit`, then `timed_out`, then `exited`, retaining
+all resource counters. Exit code 137 alone proves none of these reasons; a
+Workload can also return that code itself. If a timeout is established but Init
+cannot complete its handshake, `timed_out` is returned with `exit_code=-1`,
+empty streams and `truncated=true`, and the Sandbox is invalidated. Failed
+cgroup cleanup remains an error and never authorizes reuse.
+
+Cancellation preserves T06 semantics: client abandonment, `destroy_sandbox`,
+and Supervisor shutdown terminate the entire Sandbox and clean its cgroup tree.
+T12 adds no separate Execution cancellation operation or cumulative Agent Run
+time accounting; the latter remains T29.
+
 ## Creation and lifetime boundary
 
 The Supervisor opens the selected root-owned, immutable Profile through its
@@ -414,8 +453,8 @@ or promise cross-restart idempotency. T09 adds Sandbox cgroup Resource Budgets
 but no crash-recovery contract. Cgroup cleanup failures retain owned handles
 and the Sandbox identity reservation for a later `destroy_sandbox` retry;
 successful destruction waits for removal of the Execution, Init, and budget
-groups. Complete mount, storage, output and
-deadline enforcement remain T07 and T10–T12. This is not the complete
+groups. Complete mount, storage and output
+enforcement remain T07 and T10–T11. This is not the complete
 production security boundary.
 
 ## Verification

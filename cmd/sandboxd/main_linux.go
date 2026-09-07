@@ -38,6 +38,7 @@ func run(arguments []string) error {
 	flags.Int64Var(&config.ResourceBudget.MemoryBytes, "memory-bytes", config.ResourceBudget.MemoryBytes, "Sandbox memory budget in bytes")
 	flags.Int64Var(&config.ResourceBudget.SwapBytes, "swap-bytes", config.ResourceBudget.SwapBytes, "Sandbox swap budget in bytes; zero prohibits swap")
 	flags.Int64Var(&config.ResourceBudget.PIDs, "pids-limit", config.ResourceBudget.PIDs, "Sandbox task budget (processes and threads)")
+	flags.DurationVar(&config.ResourceBudget.ExecutionTimeout, "execution-timeout", config.ResourceBudget.ExecutionTimeout, "wall-clock budget per Execution, independent of the Worker connection")
 	flags.UintVar(&config.SubUIDStart, "subuid-start", 0, "first operator-reserved subordinate host UID")
 	flags.UintVar(&config.SubGIDStart, "subgid-start", 0, "first operator-reserved subordinate host GID")
 	flags.UintVar(&config.SubIDCount, "subid-count", 0, "reserved IDs per UID/GID range, in blocks of 65536; zero disables creation")

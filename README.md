@@ -66,7 +66,9 @@ T06 增加公开 `DestroySandbox` 调用，并处理执行中断连、Init 丢�
 
 T08 在 Python 启动前清空 Workload 的 capability 集合、设置不可撤销的 `no_new_privs`，并安装与 Profile Bundle 摘要绑定的 seccomp 白名单。策略仅支持 Linux amd64，检查完整 64 位参数，拒绝 namespace 创建、未审阅的 `clone` 标志和其他 syscall ABI；禁止调用返回 `EPERM`。真实 Linux 验收覆盖 Python 数据处理、线程与子进程继承、参数边界、策略篡改和拒绝后的复用。权限设置时机、白名单兼容问题和方案取舍见 [`T08 学习笔记`](docs/learning/t08-system-call-policy.md)。
 
-T09 使用持续存在的 Sandbox cgroup v2 父组执行 CPU、内存、swap 和 PID 资源预算，Init 与每次 Execution 使用独立子组。默认预算为 2 CPU、1 GiB 内存、禁用 swap、64 个内核任务，均由可信启动配置决定。内核 CPU 节流与内存/PID 超限分别报告；跨 Execution 留存的 Workspace 内存继续计入父预算。运行验收需要已委派 `cpu memory pids` 控制器的 cgroup v2 父目录，可通过 `SANDBOX_TEST_CGROUP_PARENT` 指定。原理、方案比较与代码阅读路线见 [`T09 学习笔记`](docs/learning/t09-resource-budgets.md)。T07、T10–T12 的后续安全及资源合同仍需完成，当前不能据此用于任意不可信 Workload。
+T09 使用持续存在的 Sandbox cgroup v2 父组执行 CPU、内存、swap 和 PID 资源预算，Init 与每次 Execution 使用独立子组。默认预算为 2 CPU、1 GiB 内存、禁用 swap、64 个内核任务，均由可信启动配置决定。内核 CPU 节流与内存/PID 超限分别报告；跨 Execution 留存的 Workspace 内存继续计入父预算。运行验收需要已委派 `cpu memory pids` 控制器的 cgroup v2 父目录，可通过 `SANDBOX_TEST_CGROUP_PARENT` 指定。原理、方案比较与代码阅读路线见 [`T09 学习笔记`](docs/learning/t09-resource-budgets.md)。
+
+T12 增加每次 Execution 的可信执行期限，默认 60 秒，可通过 `sandboxd --execution-timeout` 配置。超时后终止该次执行的全部后代，等待 Init 回收并移除 Execution cgroup，再返回 `timed_out`；清理成功时同一 Init 和 Workspace 可供后续执行复用。客户端取消和显式销毁仍终止整个 Sandbox。实现原理、替代方案、竞态与验证方法见 [`T12 学习笔记`](docs/learning/t12-execution-deadlines.md)。T07、T10–T11 的后续安全及资源合同仍需完成，当前不能据此用于任意不可信 Workload。
 
 ## 使用 Go Runtime Lab
 
