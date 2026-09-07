@@ -25,6 +25,7 @@ shell-check:
 	bash -n with_shell/*.sh
 	bash -n tests/run-sandbox-creation-linux.sh
 	bash -n tests/run-sandbox-init-linux.sh
+	bash -n tests/sandbox-cgroup-fixture.sh
 
 test-sandbox-creation:
 	bash tests/run-sandbox-creation-linux.sh
