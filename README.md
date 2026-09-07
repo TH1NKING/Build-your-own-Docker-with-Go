@@ -64,7 +64,9 @@ T05 已接入 Profile Bundle 中的真实 Sandbox Init：可信 PID 1 通过私�
 
 T06 增加公开 `DestroySandbox` 调用，并处理执行中断连、Init 丢失、创建阶段失败及服务正常关闭时的清理。销毁完成后才能释放身份范围；已结束的 Sandbox ID 在本次 Supervisor 运行期间不可复用。清理遇到陌生文件或被替换的目录会返回 `cleanup_failed`，保留现场供修复后重试。完整客户端示例、设计取舍和测试证据见 [`T06 学习笔记`](docs/learning/t06-sandbox-lifecycle.md)。Supervisor 崩溃后的持久恢复不在 T06 范围内。
 
-T09 使用持续存在的 Sandbox cgroup v2 父组执行 CPU、内存、swap 和 PID 资源预算，Init 与每次 Execution 使用独立子组。默认预算为 2 CPU、1 GiB 内存、禁用 swap、64 个内核任务，均由可信启动配置决定。内核 CPU 节流与内存/PID 超限分别报告；跨 Execution 留存的 Workspace 内存继续计入父预算。运行验收需要已委派 `cpu memory pids` 控制器的 cgroup v2 父目录，可通过 `SANDBOX_TEST_CGROUP_PARENT` 指定。原理、方案比较与代码阅读路线见 [`T09 学习笔记`](docs/learning/t09-resource-budgets.md)。T07、T08、T10–T12 的后续安全及资源合同仍需完成，当前不能据此用于任意不可信 Workload。
+T08 在 Python 启动前清空 Workload 的 capability 集合、设置不可撤销的 `no_new_privs`，并安装与 Profile Bundle 摘要绑定的 seccomp 白名单。策略仅支持 Linux amd64，检查完整 64 位参数，拒绝 namespace 创建、未审阅的 `clone` 标志和其他 syscall ABI；禁止调用返回 `EPERM`。真实 Linux 验收覆盖 Python 数据处理、线程与子进程继承、参数边界、策略篡改和拒绝后的复用。权限设置时机、白名单兼容问题和方案取舍见 [`T08 学习笔记`](docs/learning/t08-system-call-policy.md)。
+
+T09 使用持续存在的 Sandbox cgroup v2 父组执行 CPU、内存、swap 和 PID 资源预算，Init 与每次 Execution 使用独立子组。默认预算为 2 CPU、1 GiB 内存、禁用 swap、64 个内核任务，均由可信启动配置决定。内核 CPU 节流与内存/PID 超限分别报告；跨 Execution 留存的 Workspace 内存继续计入父预算。运行验收需要已委派 `cpu memory pids` 控制器的 cgroup v2 父目录，可通过 `SANDBOX_TEST_CGROUP_PARENT` 指定。原理、方案比较与代码阅读路线见 [`T09 学习笔记`](docs/learning/t09-resource-budgets.md)。T07、T10–T12 的后续安全及资源合同仍需完成，当前不能据此用于任意不可信 Workload。
 
 ## 使用 Go Runtime Lab
 

@@ -335,10 +335,12 @@ mount checks. It never binds the host proc view into the Sandbox.
 detaching the old root needs no writable `put_old` directory in the immutable
 Profile. The temporary staging disappears with the detached old root.
 
-The installer materializes the separately verified Init at `/sandbox-init` and
+The installer materializes the separately verified Init at `/sandbox-init`,
+the matching Policy at `/system-call-policy.json`, and
 reserves empty `/proc`, `/workspace`, and `/tmp` directories. Before creation,
-the Supervisor checks the installed Init's owner, mode, size, SHA-256 and
-non-symlink status against its installed manifest. The bootstrap mounts local
+the Supervisor checks both copies' owner, mode, size, SHA-256 and
+non-symlink status against the installed manifest, and validates and compiles
+the Policy. The bootstrap mounts local
 proc, a private Workspace tmpfs and a private temporary tmpfs, then `exec`s
 `/sandbox-init`, preserving PID 1. Init itself signals readiness. The Profile
 root stays read-only; only `/workspace/output` and `/tmp` are writable by UID
@@ -378,6 +380,23 @@ The Supervisor then uses `cgroup.kill`, waits for `populated 0`, and asks Init
 to reap adopted descendants and drain output before returning the result.
 Process groups and `setsid` do not let descendants outlive an Execution.
 
+T08 pins Init's launch goroutine to one OS thread and clears that thread's
+capability bounding, inheritable, and ambient sets before it forks Workloads.
+Init retains effective/permitted authority for its trusted lifecycle operations.
+The launcher runs as UID/GID 1000, locks its own OS thread, loads the fixed
+read-only Policy, explicitly clears all active capabilities, sets
+`no_new_privs`, and installs the filter before `exec` of Python on that thread.
+Other launcher threads execute trusted Go code only and disappear at exec.
+Python and all its later threads and descendants inherit these restrictions.
+Any setup failure aborts the launch; there is no unrestricted fallback.
+
+The initial Policy supports only Linux amd64, allows reviewed Python syscalls,
+checks complete 64-bit arguments, and denies other architectures, x32 calls,
+namespace-creating or unreviewed `clone` flags, and `clone3`. A denied call
+returns `EPERM`. Python can catch this error and continue, so a denial does not
+invent a new Execution terminal reason: callers observe normal Python output,
+errors, and exit status. The protocol accepts no Policy or capability override.
+
 One Init waiter owns `wait4` for both main and adopted children. A broken
 control channel or inconsistent handshake invalidates the Sandbox. Init death
 causes Linux to terminate the remaining PID namespace processes. Graceful
@@ -395,8 +414,8 @@ or promise cross-restart idempotency. T09 adds Sandbox cgroup Resource Budgets
 but no crash-recovery contract. Cgroup cleanup failures retain owned handles
 and the Sandbox identity reservation for a later `destroy_sandbox` retry;
 successful destruction waits for removal of the Execution, Init, and budget
-groups. Complete mount, capability, System Call Policy, storage, output and
-deadline enforcement remain T07, T08, T10–T12. This is not the complete
+groups. Complete mount, storage, output and
+deadline enforcement remain T07 and T10–T12. This is not the complete
 production security boundary.
 
 ## Verification

@@ -17,6 +17,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/TH1NKING/Build-your-own-Docker-with-Go/internal/systemcallpolicy"
 )
 
 const (
@@ -142,91 +144,7 @@ func readSystemCallPolicy(policyPath string) ([]byte, error) {
 }
 
 func decodeSystemCallPolicy(policyBytes []byte) ([]byte, error) {
-	decoder := json.NewDecoder(bytes.NewReader(policyBytes))
-	decoder.DisallowUnknownFields()
-	var policy systemCallPolicy
-	if err := decoder.Decode(&policy); err != nil {
-		return nil, fmt.Errorf("decode System Call Policy: %w", err)
-	}
-	if err := requireJSONEOF(decoder); err != nil {
-		return nil, fmt.Errorf("decode System Call Policy: %w", err)
-	}
-	if policy.Schema != "system-call-policy/v1" || policy.Profile != profileID ||
-		policy.Target.OS != "linux" || policy.Target.Arch != "amd64" {
-		return nil, errors.New("System Call Policy must target system-call-policy/v1 for python-data-v1 on linux/amd64")
-	}
-	if policy.DefaultAction.Action != "errno" || policy.DefaultAction.Errno <= 0 {
-		return nil, errors.New("System Call Policy must provide a nonzero default errno action")
-	}
-	if err := validateSystemCallRules(policy.Rules); err != nil {
-		return nil, err
-	}
-	canonical, err := canonicalJSON(policy)
-	if err != nil {
-		return nil, fmt.Errorf("encode canonical System Call Policy: %w", err)
-	}
-	return canonical, nil
-}
-
-func validateSystemCallRules(rules []systemCallPolicyRule) error {
-	if rules == nil {
-		return errors.New("System Call Policy rules must be an explicit JSON array")
-	}
-	lastRuleName := ""
-	for ruleIndex, rule := range rules {
-		if len(rule.Names) == 0 || rule.Action != "allow" {
-			return errors.New("System Call Policy rules must name syscalls and use the allow action")
-		}
-		for nameIndex, name := range rule.Names {
-			if !validSystemCallName(name) {
-				return errors.New("System Call Policy syscall names may contain only lowercase ASCII letters, digits, and underscores")
-			}
-			if nameIndex > 0 && rule.Names[nameIndex-1] >= name {
-				return errors.New("System Call Policy syscall names must be unique and in bytewise order")
-			}
-		}
-		if ruleIndex > 0 && lastRuleName >= rule.Names[0] {
-			return errors.New("System Call Policy rules must be in bytewise syscall order")
-		}
-		lastRuleName = rule.Names[len(rule.Names)-1]
-		if rule.Arguments == nil {
-			return errors.New("System Call Policy rule arguments must be an explicit JSON array")
-		}
-		for argumentIndex, argument := range rule.Arguments {
-			if argument.Index > 5 {
-				return errors.New("System Call Policy argument index must be between 0 and 5")
-			}
-			if argumentIndex > 0 && rule.Arguments[argumentIndex-1].Index >= argument.Index {
-				return errors.New("System Call Policy arguments must have unique increasing indexes")
-			}
-			switch argument.Operator {
-			case "equal", "not-equal", "less-than", "less-or-equal", "greater-than", "greater-or-equal":
-				if argument.Mask != 0 {
-					return errors.New("System Call Policy argument mask is valid only with masked-equal")
-				}
-			case "masked-equal":
-				if argument.Mask == 0 {
-					return errors.New("System Call Policy masked-equal argument requires a nonzero mask")
-				}
-			default:
-				return fmt.Errorf("unsupported System Call Policy argument operator %q", argument.Operator)
-			}
-		}
-	}
-	return nil
-}
-
-func validSystemCallName(name string) bool {
-	if name == "" {
-		return false
-	}
-	for _, character := range name {
-		if character >= 'a' && character <= 'z' || character >= '0' && character <= '9' || character == '_' {
-			continue
-		}
-		return false
-	}
-	return true
+	return systemcallpolicy.Canonical(policyBytes)
 }
 
 func validateBuildOptions(options BuildOptions) error {

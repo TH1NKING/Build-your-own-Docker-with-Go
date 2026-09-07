@@ -54,32 +54,6 @@ type lockedInput struct {
 	Exclude       []string `json:"exclude"`
 }
 
-type systemCallPolicy struct {
-	Schema        string                 `json:"schema"`
-	Profile       string                 `json:"profile"`
-	Target        target                 `json:"target"`
-	DefaultAction policyDefaultAction    `json:"default_action"`
-	Rules         []systemCallPolicyRule `json:"rules"`
-}
-
-type policyDefaultAction struct {
-	Action string `json:"action"`
-	Errno  int    `json:"errno"`
-}
-
-type systemCallPolicyRule struct {
-	Names     []string                   `json:"names"`
-	Action    string                     `json:"action"`
-	Arguments []systemCallPolicyArgument `json:"arguments"`
-}
-
-type systemCallPolicyArgument struct {
-	Index    uint   `json:"index"`
-	Operator string `json:"operator"`
-	Value    uint64 `json:"value"`
-	Mask     uint64 `json:"mask"`
-}
-
 type manifest struct {
 	Schema     string        `json:"schema"`
 	Profile    string        `json:"profile"`

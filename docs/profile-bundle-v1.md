@@ -4,7 +4,8 @@ Profile Bundle v1 is the published build and installation contract for the
 `python-data-v1` Runtime Profile. It is intentionally narrow: the format binds
 one locked Linux root filesystem, one separately built Sandbox Init, and one
 System Call Policy. The production Init is built from `cmd/sandbox-init`; the
-Bundle format binds its bytes without enforcing the System Call Policy.
+Bundle format binds its bytes; the Sandbox launch path enforces the matching
+System Call Policy before Python executes.
 
 ## Trust and identity
 
@@ -51,9 +52,12 @@ self-referential identity.
 The System Call Policy envelope is versioned as well. Each rule contains
 sorted syscall `names`, the `allow` action, and zero or more argument
 predicates. A predicate fixes an argument index from 0 through 5, one supported
-comparison operator, a value, and a mask used only by `masked-equal`. T02
-validates and binds this schema; T08 remains responsible for reviewing the
-actual calls and applying the rules to the kernel.
+comparison operator, a value, and a mask used only by `masked-equal`. T08 shares
+strict parsing and compilation between Bundle tooling and the Sandbox launch
+path. Duplicate keys, unknown fields or syscall names, invalid predicates, and
+programs exceeding the kernel's 4,096-instruction bound are rejected. Comparisons
+use the complete unsigned 64-bit argument. The initial policy targets only
+Linux amd64, rejects alternate syscall ABIs, and defaults to `EPERM`.
 
 ## Canonical root filesystem
 
@@ -74,16 +78,17 @@ an additional rollback failure is reported explicitly as an uncertain host
 filesystem failure.
 
 The installed root also contains `/sandbox-init`, copied from the verified
-outer Init component with mode `0555`, and empty root-owned `0555` directories
-at `/proc`, `/workspace`, and `/tmp`. These four paths and every path beneath
+outer Init component with mode `0555`, `/system-call-policy.json`, copied from
+its verified component with mode `0444`, and empty root-owned `0555` directories
+at `/proc`, `/workspace`, and `/tmp`. These five paths and every path beneath
 them are reserved: a root-filesystem archive that occupies any of them is
-rejected. The Init copy and mountpoints are materialized in staging before
+rejected. The Init and Policy copies and mountpoints are materialized in staging before
 publication; they do not change the independently verified `rootfs.tar`
 component digest. Reinstallation verifies the complete materialized tree.
 
-Before creation, the Sandbox Supervisor verifies the installed Init's
+Before creation, the Sandbox Supervisor verifies the installed Init and Policy's
 ownership, mode, size, and SHA-256 against its manifest component using
-directory handles. Bootstrap mounts the Profile root read-only and enters
+directory handles and rejects a Policy that cannot compile. Bootstrap mounts the Profile root read-only and enters
 the bundled `/sandbox-init` as namespace PID 1. The reserved directories
 allow private runtime mounts without making the Profile root writable.
 
@@ -112,10 +117,15 @@ excluded by the reviewed recipe. Adding dependencies changes the reviewed
 input and Bundle identity; broadening the System Call Policy requires a new
 Runtime Profile version after T08 conformance.
 
-The current System Call Policy is a default-deny candidate with no allow rules.
-It is format-valid and digest-bound, but the profile must not be promoted for
-Workload execution until T08 supplies and verifies the reviewed allowlist on a
-real Linux kernel.
+T08 replaces the unshipped, empty candidate with the initial reviewed allowlist.
+It permits the locked Python runtime and representative standard-library data
+work, threads, and child processes. `clone` accepts only reviewed flags;
+namespace flags and unreviewed high bits are denied. `clone3` is denied because
+its flags are behind a pointer that seccomp cannot safely inspect. There is no
+automatic learning or fallback to an unrestricted execution. After this initial
+policy, expanding permission requires review, conformance evidence, and a new
+Runtime Profile version under ADR-0019. This is one layer of the Sandbox boundary;
+T07 and T10–T12 retain their remaining acceptance work.
 
 ## Commands
 

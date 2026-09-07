@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -40,8 +41,15 @@ type initMessage struct {
 // RunInit is the trusted Profile Bundle entry point. Its pipes are inherited
 // from the Supervisor; neither the Worker socket nor a Workload can reach them.
 func RunInit() error {
+	// Bounding and inheritable capabilities belong to an OS thread. Every
+	// StartProcess below must fork from this same restricted thread. On error
+	// main exits; never return this thread to the runtime's worker pool.
+	runtime.LockOSThread()
 	if os.Getpid() != 1 || os.Geteuid() != 0 || os.Getegid() != 0 {
 		return errors.New("Sandbox Init requires namespace PID 1 and internal UID/GID zero")
+	}
+	if err := restrictInitCapabilityInheritance(); err != nil {
+		return err
 	}
 	ready := os.NewFile(3, "init-ready")
 	control := os.NewFile(4, "init-requests")
@@ -327,6 +335,9 @@ func initWorkloadEnvironment() []string {
 // RunInitWorkload is the trusted, unprivileged launch gate. Only its inherited
 // gate and stdio survive the first exec; the gate is closed before Python.
 func RunInitWorkload(source string) error {
+	// Keep per-thread privilege changes and exec on the same OS thread.
+	// Failure is fatal to this launcher, so deliberately do not unlock it.
+	runtime.LockOSThread()
 	if os.Getpid() == 1 || os.Geteuid() != 1000 || os.Getegid() != 1000 {
 		return errors.New("Sandbox Workload requires internal UID/GID 1000")
 	}
@@ -342,6 +353,16 @@ func RunInitWorkload(source string) error {
 		return errors.New("Sandbox Workload was not released by the Supervisor")
 	}
 	if err := gate.Close(); err != nil {
+		return err
+	}
+	filter, err := workloadSystemCallFilter()
+	if err != nil {
+		return err
+	}
+	if err := dropWorkloadPrivileges(); err != nil {
+		return err
+	}
+	if err := installWorkloadSystemCallFilter(filter); err != nil {
 		return err
 	}
 	return syscall.Exec("/opt/python/bin/python3", []string{"python3", "-I", "-B", "-c", source}, initWorkloadEnvironment())
