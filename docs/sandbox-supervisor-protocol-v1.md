@@ -10,6 +10,7 @@ Sandbox creation when the Platform Operator enables subordinate-ID allocation.
 T05 adds a verified Sandbox Init and sequential `execute_python` requests.
 T06 adds explicit `destroy_sandbox`, request abandonment cleanup, and terminal
 identifier protection within one Supervisor lifetime.
+T11 adds independently bounded output and `get_execution_result` snapshots.
 The default protocol-only mode still returns `operation_unavailable` for a
 valid `create_sandbox` request whose Profile exists.
 
@@ -75,6 +76,8 @@ Trusted Resource Budget flags (defaults shown) are:
 --swap-bytes 0
 --pids-limit 64
 --execution-timeout 1m
+--stdout-bytes 1048576
+--stderr-bytes 1048576
 ```
 
 CPU uses a fixed 100,000-microsecond period; 2000 millicores produces
@@ -85,6 +88,12 @@ whole memory pages; PID count must be positive. Invalid budgets fail startup.
 Execution timeout is a positive Go duration (for example `500ms` or `75s`);
 zero and negative durations are rejected. It is trusted startup policy, never
 a Worker request or Workload override.
+Each output budget is a positive byte count up to the v1 safety ceiling of
+8 MiB. Output policy travels only on the private Supervisor-to-Init channel;
+the Init validates the same range before allocating its capture buffers.
+Rebuild and install a Profile Bundle containing the matching T11 Sandbox Init
+when updating the Supervisor: older private Init protocols do not accept the
+new output-policy fields. Bundle identities continue to include the Init digest.
 Budgets include Init and Workload tasks (including threads), and surviving
 Workspace tmpfs charges remain under the same parent across Executions.
 Very small valid policies may be insufficient to start or keep Init alive;
@@ -105,12 +114,16 @@ Each message consists of:
 1. A four-byte unsigned big-endian payload length.
 2. One UTF-8 JSON payload of that exact length.
 
-Control messages are limited to 65,536 bytes. A declared larger request is
+Requests are limited to 65,536 bytes. A declared larger request is
 rejected before its payload is read or allocated. Connections have a bounded
 deadline, and the Supervisor serves up to 16 control connections concurrently
-so an incomplete client cannot block unrelated requests. T05 permits bounded
-Python source, stdin and output in the control frame; bulk file transfer remains
-outside this protocol. Reading a request has a five-second deadline. Writing a
+so an incomplete client cannot block unrelated requests. Responses permit at
+most 96 MiB + 64 KiB: JSON can expand each byte into six bytes, and each of the
+two streams has an 8 MiB safety ceiling. This is a wire ceiling, not the default
+capture allowance. Init `ready` responses use the same ceiling; Init requests
+and `started`/`exited` responses retain the 64 KiB bound. Receivers reject an
+oversized declared length before allocation. Bulk file transfer remains outside
+this protocol. Reading a request has a five-second deadline. Writing a
 response has a separate five-second window beginning when the result is ready.
 Neither window supplies the Execution deadline. Init startup and final
 reap/readiness handshakes have separate five-second transport guards.
@@ -120,8 +133,8 @@ invalid UTF-8, missing required fields, and malformed JSON are rejected.
 
 ## Request
 
-The closed operation set is `create_sandbox`, `execute_python`, and
-`destroy_sandbox`. Creation:
+The closed operation set is `create_sandbox`, `execute_python`,
+`get_execution_result`, and `destroy_sandbox`. Creation:
 
 ```json
 {
@@ -169,8 +182,44 @@ frame must still fit 64 KiB. An Execution runs as internal UID/GID 1000 with no
 supplementary groups, a fixed environment, and `/workspace/output` as its
 current directory. Only standard input/output/error reach Python. Concurrent
 requests for the same Sandbox are rejected with `sandbox_busy`; they are not
-queued. `execution_id` correlates a result, not an idempotency key: T05 has no
-durable dispatch/result store. Never automatically retry an uncertain request.
+queued. Once the Sandbox is idle, reusing an Execution ID with a retained result
+returns `execution_exists`, without running code or changing that result. A
+fresh Execution needs a fresh ID. This does not provide durable dispatch or
+cross-restart deduplication; never automatically retry an uncertain execution.
+
+Read one completed result without contacting Init:
+
+```json
+{
+  "schema": "sandbox-supervisor-request/v1",
+  "request_id": "req-read-step-1",
+  "operation": "get_execution_result",
+  "parameters": { "sandbox_id": "run-001", "execution_id": "step-1" }
+}
+```
+
+`Client.GetExecutionResult` returns the same Execution Result snapshot as the
+original execution response, with the new read request's envelope identity.
+Unknown references return `execution_result_not_found`; a reserved, still
+running Execution returns `execution_result_not_ready`. The method accepts no
+source, host path, output override or other execution parameters. It does not
+wait for an Execution lock and cannot cancel a Sandbox when its client closes.
+
+The Supervisor reserves a result slot before starting code or acquiring
+cancellation ownership. Across all Sandboxes it retains at most 64 slots and
+128 MiB of reserved output allowance; each slot reserves the sum of its trusted
+stdout and stderr budgets, even if the actual output is shorter. Full capacity
+returns `execution_result_capacity`, keeping existing results readable and
+leaving the Sandbox alive. These bounds cover retained output and entry count,
+not total process RSS: JSON encoding/decoding and concurrent response delivery
+also use bounded transient memory.
+
+Results survive subsequent Executions and automatic Sandbox teardown, including
+Init loss. Successful explicit `destroy_sandbox` releases that Sandbox's result
+slots even if its processes were already gone. Failed cleanup retains results
+for inspection and retry. Supervisor exit loses this local temporary store;
+the Worker must obtain and later persist results in the Control Plane before
+explicit destruction. This is not ADR-0034's durable Conversation store.
 
 Destruction accepts only the opaque Sandbox identifier:
 
@@ -231,6 +280,10 @@ Stable v1 error codes are:
 - `sandbox_busy`
 - `execution_failed`
 - `cleanup_failed`
+- `execution_exists`
+- `execution_result_not_found`
+- `execution_result_not_ready`
+- `execution_result_capacity`
 
 `creation_failed` means the Supervisor could not complete or confirm the
 private bootstrap. `sandbox_exists` rejects an active, retired, or pre-existing Sandbox
@@ -266,11 +319,19 @@ the verified Init entered its private request loop; it does not promise
 indefinite liveness or availability of Execution cgroup resources.
 
 Successful Executions return `execution_id`, `exit_code`, separate `stdout`
-and `stderr`, and `truncated`. A nonzero Python exit is still an Execution
-Result, not a protocol error. T05 retains at most 4 KiB per stream and drains
-the remainder without retaining it; invalid UTF-8 is replaced. These small
-preliminary results fit the current control frame. T11 will implement the full
-configured output budget and Execution Result contract.
+and `stderr`, independent `stdout_truncated` and `stderr_truncated`, and the
+compatibility field `truncated` (the OR of the two flags). A nonzero Python exit
+is still an Execution Result, not a protocol error. Each stream retains a
+prefix up to its configured budget (1 MiB each by default), while its independent
+reader continues draining excess bytes so output cannot block termination.
+Exactly filling a budget does not mark truncation; discarding any suffix does.
+Invalid UTF-8 is replaced, then text is shortened to a valid UTF-8 byte boundary
+if replacement expanded it beyond budget. Such shortening also marks truncation.
+The stored text owns a bounded allocation, not a slice retaining the expanded
+conversion buffer. Output is a lossy text representation, not a binary transfer.
+
+The result is published once, after descendant cleanup, Init's final response,
+and resource accounting. Reads do not recapture streams or rerun Workloads.
 
 T09 adds `terminal_reason` and `resource_usage` to this bounded result:
 
@@ -281,6 +342,8 @@ T09 adds `terminal_reason` and `resource_usage` to this bounded result:
   "stdout": "",
   "stderr": "",
   "truncated": false,
+  "stdout_truncated": false,
+  "stderr_truncated": false,
   "terminal_reason": "memory_limit",
   "resource_usage": {
     "oom_events": 1,
@@ -315,7 +378,7 @@ sets the blocked Workload launcher's adjustment back to zero and confirms it.
 `memory.oom.group=1` is set only on the Execution leaf. These measures do not
 guarantee Init can survive every resource failure. If kernel evidence proves
 exhaustion but Init cannot finish its handshake, the result retains that
-resource reason with `exit_code=-1`, empty streams and `truncated=true` to
+resource reason with `exit_code=-1`, empty streams and all three truncation flags true to
 indicate unavailable output/status; that Sandbox is invalidated and torn down.
 Usable Init state and complete cleanup are required for sequential reuse.
 
@@ -453,8 +516,8 @@ or promise cross-restart idempotency. T09 adds Sandbox cgroup Resource Budgets
 but no crash-recovery contract. Cgroup cleanup failures retain owned handles
 and the Sandbox identity reservation for a later `destroy_sandbox` retry;
 successful destruction waits for removal of the Execution, Init, and budget
-groups. Complete mount, storage and output
-enforcement remain T07 and T10–T11. This is not the complete
+groups. T11's bounded local result snapshots add no crash recovery. Complete
+mount and storage enforcement remain T07 and T10. This is not the complete
 production security boundary.
 
 ## Verification

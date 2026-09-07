@@ -79,6 +79,8 @@ func (creator *sandboxCreator) destroy(id string) ErrorCode {
 	creator.mu.Lock()
 	sandbox := creator.active[id]
 	if sandbox == nil {
+		// Keep absent-Sandbox cleanup atomic with creation of a fresh ID.
+		creator.results.removeSandbox(id)
 		creator.mu.Unlock()
 		return "" // An already absent Sandbox has nothing left to destroy.
 	}
@@ -94,5 +96,6 @@ func (creator *sandboxCreator) destroy(id string) ErrorCode {
 	if sandbox.cleanupErr != nil {
 		return ErrorCodeCleanupFailed
 	}
+	creator.results.removeSandbox(id)
 	return ""
 }

@@ -13,6 +13,14 @@ type Client struct{ socketPath string }
 
 func NewClient(socketPath string) *Client { return &Client{socketPath: socketPath} }
 
+func (client *Client) GetExecutionResult(ctx context.Context, request GetExecutionResultRequest) (GetExecutionResultResponse, error) {
+	var response GetExecutionResultResponse
+	err := client.exchange(ctx, request.RequestID, OperationGetExecutionResult, executionResultReference{
+		SandboxID: request.SandboxID, ExecutionID: request.ExecutionID,
+	}, &response)
+	return response, err
+}
+
 func (client *Client) DestroySandbox(ctx context.Context, request DestroySandboxRequest) (DestroySandboxResponse, error) {
 	var response DestroySandboxResponse
 	err := client.exchange(ctx, request.RequestID, OperationDestroySandbox, destroySandboxParameters{SandboxID: request.SandboxID}, &response)
@@ -56,10 +64,10 @@ func (client *Client) exchange(ctx context.Context, requestID, operation string,
 			return err
 		}
 	}
-	if err := writeFrame(connection, payload); err != nil {
+	if err := writeFrame(connection, payload, maximumControlMessageSize); err != nil {
 		return fmt.Errorf("send Sandbox Supervisor request: %w", err)
 	}
-	responsePayload, err := readFrame(connection)
+	responsePayload, err := readFrame(connection, maximumResultMessageSize)
 	if err != nil {
 		return fmt.Errorf("receive Sandbox Supervisor response: %w", err)
 	}

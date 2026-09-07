@@ -73,8 +73,8 @@ func TestSandboxExecutionDeadlineKillsDetachedOutputWritersBeforeRepeatedReuse(t
 		"--cgroup-root", os.Getenv("SANDBOX_CGROUP_ROOT"), "--execution-timeout", "1s"))
 	assertSandboxCreated(t, exchangeSandboxSupervisorMessage(t, fixture.socketPath,
 		createSandboxWireRequest(t, "create", "run-writers", identity)), "run-writers")
-	for range 3 {
-		result := executeSandboxPython(t, fixture, "run-writers", "flood", `import os, signal, time
+	for round := range 3 {
+		result := executeSandboxPython(t, fixture, "run-writers", "flood-"+strconv.Itoa(round), `import os, signal, time
 r, w = os.pipe()
 if os.fork() == 0:
     os.close(r)
@@ -91,10 +91,10 @@ assert os.read(r, 1) == b'R'
 os.close(r)
 while True: time.sleep(60)`)
 		if result.TerminalReason != "timed_out" || result.ExitCode != 137 || !result.Truncated ||
-			len(result.Stdout) != 4096 || len(result.Stderr) != 4096 {
+			len(result.Stdout) != 1<<20 || len(result.Stderr) != 1<<20 || !result.StdoutTruncated || !result.StderrTruncated {
 			t.Fatalf("continuous detached writers escaped the deadline or lost output: %+v", result)
 		}
-		clean := executeSandboxPython(t, fixture, "run-writers", "clean", `import os
+		clean := executeSandboxPython(t, fixture, "run-writers", "clean-"+strconv.Itoa(round), `import os
 assert set(n for n in os.listdir('/proc') if n.isdigit()) == {'1', str(os.getpid())}
 print('no-descendants-or-zombies')`)
 		if clean.TerminalReason != "exited" || clean.ExitCode != 0 || clean.Stdout != "no-descendants-or-zombies\n" {

@@ -6,9 +6,10 @@ const (
 	RequestSchemaV1  = "sandbox-supervisor-request/v1"
 	ResponseSchemaV1 = "sandbox-supervisor-response/v1"
 
-	OperationCreateSandbox  = "create_sandbox"
-	OperationExecutePython  = "execute_python"
-	OperationDestroySandbox = "destroy_sandbox"
+	OperationCreateSandbox      = "create_sandbox"
+	OperationExecutePython      = "execute_python"
+	OperationDestroySandbox     = "destroy_sandbox"
+	OperationGetExecutionResult = "get_execution_result"
 )
 
 type ErrorCode string
@@ -28,6 +29,10 @@ const (
 	ErrorCodeSandboxBusy            ErrorCode = "sandbox_busy"
 	ErrorCodeExecutionFailed        ErrorCode = "execution_failed"
 	ErrorCodeCleanupFailed          ErrorCode = "cleanup_failed"
+	ErrorCodeExecutionExists        ErrorCode = "execution_exists"
+	ErrorCodeResultNotFound         ErrorCode = "execution_result_not_found"
+	ErrorCodeResultNotReady         ErrorCode = "execution_result_not_ready"
+	ErrorCodeResultCapacity         ErrorCode = "execution_result_capacity"
 )
 
 type DestroySandboxRequest struct {
@@ -61,14 +66,29 @@ type ExecutePythonResponse struct {
 	Error     *ProtocolError       `json:"error"`
 }
 
+type GetExecutionResultRequest struct {
+	RequestID   string
+	SandboxID   string
+	ExecutionID string
+}
+
+type GetExecutionResultResponse struct {
+	Schema    string               `json:"schema"`
+	RequestID string               `json:"request_id"`
+	Result    *ExecutePythonResult `json:"result"`
+	Error     *ProtocolError       `json:"error"`
+}
+
 type ExecutePythonResult struct {
-	ExecutionID    string                  `json:"execution_id"`
-	ExitCode       int                     `json:"exit_code"`
-	Stdout         string                  `json:"stdout"`
-	Stderr         string                  `json:"stderr"`
-	Truncated      bool                    `json:"truncated"`
-	TerminalReason ExecutionTerminalReason `json:"terminal_reason"`
-	ResourceUsage  ExecutionResourceUsage  `json:"resource_usage"`
+	ExecutionID     string                  `json:"execution_id"`
+	ExitCode        int                     `json:"exit_code"`
+	Stdout          string                  `json:"stdout"`
+	Stderr          string                  `json:"stderr"`
+	Truncated       bool                    `json:"truncated"`
+	StdoutTruncated bool                    `json:"stdout_truncated"`
+	StderrTruncated bool                    `json:"stderr_truncated"`
+	TerminalReason  ExecutionTerminalReason `json:"terminal_reason"`
+	ResourceUsage   ExecutionResourceUsage  `json:"resource_usage"`
 }
 
 type ExecutionTerminalReason string

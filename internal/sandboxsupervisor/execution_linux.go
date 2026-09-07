@@ -40,7 +40,7 @@ func (service *server) executePythonResponse(operation *controlOperation, reques
 	return responseEnvelope{Schema: ResponseSchemaV1, RequestID: requestID, Result: result}
 }
 
-func (creator *sandboxCreator) execute(operation *controlOperation, parameters executePythonParameters) (*ExecutePythonResult, ErrorCode) {
+func (creator *sandboxCreator) execute(operation *controlOperation, parameters executePythonParameters) (snapshot *ExecutePythonResult, code ErrorCode) {
 	creator.mu.Lock()
 	sandbox := creator.active[parameters.SandboxID]
 	if sandbox == nil || sandbox.process == nil || sandbox.terminating || sandbox.ctx.Err() != nil {
@@ -53,6 +53,13 @@ func (creator *sandboxCreator) execute(operation *controlOperation, parameters e
 		return nil, ErrorCodeSandboxBusy
 	}
 	defer sandbox.execution.Unlock()
+	reference := executionResultReference{SandboxID: parameters.SandboxID, ExecutionID: parameters.ExecutionID}
+	budget := creator.config.ResourceBudget
+	if code := creator.results.reserve(reference, budget.StdoutBytes+budget.StderrBytes); code != "" {
+		return nil, code
+	}
+	// Freeze only after all Execution cleanup, but before releasing the lock.
+	defer func() { creator.results.finish(reference, snapshot) }()
 	operation.own(sandbox)
 	select {
 	case <-sandbox.exited:
@@ -86,7 +93,8 @@ func (creator *sandboxCreator) execute(operation *controlOperation, parameters e
 	if err := setInitTransportDeadline(sandbox); err != nil {
 		return nil, ErrorCodeExecutionFailed
 	}
-	if err := sendInitRequest(sandbox.requests, initRequest{Action: "start", Source: parameters.Source, Stdin: parameters.Stdin}); err != nil {
+	if err := sendInitRequest(sandbox.requests, initRequest{Action: "start", Source: parameters.Source, Stdin: parameters.Stdin,
+		StdoutBytes: creator.config.ResourceBudget.StdoutBytes, StderrBytes: creator.config.ResourceBudget.StderrBytes}); err != nil {
 		return nil, ErrorCodeExecutionFailed
 	}
 	started, err := receiveInitResponse(sandbox.responses, "started")
@@ -150,7 +158,8 @@ func (creator *sandboxCreator) execute(operation *controlOperation, parameters e
 	}
 	sandbox.cgroups.execution = nil
 	complete = true
-	return &ExecutePythonResult{ExecutionID: parameters.ExecutionID, ExitCode: result.ExitCode, Stdout: result.Stdout, Stderr: result.Stderr, Truncated: result.Truncated, TerminalReason: reason, ResourceUsage: usage}, ""
+	return &ExecutePythonResult{ExecutionID: parameters.ExecutionID, ExitCode: result.ExitCode, Stdout: result.Stdout, Stderr: result.Stderr, Truncated: result.Truncated,
+		StdoutTruncated: result.StdoutTruncated, StderrTruncated: result.StderrTruncated, TerminalReason: reason, ResourceUsage: usage}, ""
 }
 
 func incompleteResourceResult(executionID string, reason ExecutionTerminalReason, usage ExecutionResourceUsage) (*ExecutePythonResult, ErrorCode) {
@@ -160,7 +169,7 @@ func incompleteResourceResult(executionID string, reason ExecutionTerminalReason
 	// Host budget evidence survives loss of Init, but its exit status and
 	// captured output do not. Never manufacture an exit code from that evidence.
 	// The caller's failed-handshake teardown invalidates this Sandbox.
-	return &ExecutePythonResult{ExecutionID: executionID, ExitCode: -1, Truncated: true, TerminalReason: reason, ResourceUsage: usage}, ""
+	return &ExecutePythonResult{ExecutionID: executionID, ExitCode: -1, Truncated: true, StdoutTruncated: true, StderrTruncated: true, TerminalReason: reason, ResourceUsage: usage}, ""
 }
 
 func setProcessOOMScore(pid, score int) error {
@@ -253,16 +262,20 @@ func sendInitRequest(file *os.File, request initRequest) error {
 	if err != nil {
 		return err
 	}
-	return writeFrame(file, payload)
+	return writeFrame(file, payload, maximumControlMessageSize)
 }
 
 func receiveInitResponse(file *os.File, phase string) (initResponse, error) {
-	payload, err := readFrame(file)
+	maximumSize := uint32(maximumControlMessageSize)
+	if phase == "ready" {
+		maximumSize = maximumResultMessageSize
+	}
+	payload, err := readFrame(file, maximumSize)
 	if err != nil {
 		return initResponse{}, err
 	}
 	var response initResponse
-	if err := decodeStrictJSON(payload, &response, "phase", "pid", "exit_code", "stdout", "stderr", "truncated"); err != nil {
+	if err := decodeStrictJSON(payload, &response, "phase", "pid", "exit_code", "stdout", "stderr", "truncated", "stdout_truncated", "stderr_truncated"); err != nil {
 		return initResponse{}, err
 	}
 	if response.Phase != phase {

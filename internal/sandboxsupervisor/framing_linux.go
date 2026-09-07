@@ -11,9 +11,13 @@ import (
 
 const maximumControlMessageSize = 64 << 10
 
+// JSON can escape one output byte as six bytes (for example, NUL).
+// Requests retain their smaller bound; only result responses use this bound.
+const maximumResultMessageSize = 12*maximumOutputBytes + maximumControlMessageSize
+
 var errControlMessageTooLarge = errors.New("control message is too large")
 
-func readFrame(reader io.Reader) ([]byte, error) {
+func readFrame(reader io.Reader, maximumSize uint32) ([]byte, error) {
 	var header [4]byte
 	if _, err := io.ReadFull(reader, header[:]); err != nil {
 		return nil, fmt.Errorf("read control message length: %w", err)
@@ -22,8 +26,8 @@ func readFrame(reader io.Reader) ([]byte, error) {
 	if length == 0 {
 		return nil, errors.New("control message is empty")
 	}
-	if length > maximumControlMessageSize {
-		return nil, fmt.Errorf("%w: length %d exceeds %d bytes", errControlMessageTooLarge, length, maximumControlMessageSize)
+	if length > maximumSize {
+		return nil, fmt.Errorf("%w: length %d exceeds %d bytes", errControlMessageTooLarge, length, maximumSize)
 	}
 	payload := make([]byte, length)
 	if _, err := io.ReadFull(reader, payload); err != nil {
@@ -32,12 +36,12 @@ func readFrame(reader io.Reader) ([]byte, error) {
 	return payload, nil
 }
 
-func writeFrame(writer io.Writer, payload []byte) error {
+func writeFrame(writer io.Writer, payload []byte, maximumSize int) error {
 	if len(payload) == 0 {
 		return errors.New("control message is empty")
 	}
-	if len(payload) > maximumControlMessageSize {
-		return fmt.Errorf("control message length %d exceeds %d bytes", len(payload), maximumControlMessageSize)
+	if len(payload) > maximumSize {
+		return fmt.Errorf("control message length %d exceeds %d bytes", len(payload), maximumSize)
 	}
 	var header [4]byte
 	binary.BigEndian.PutUint32(header[:], uint32(len(payload)))
