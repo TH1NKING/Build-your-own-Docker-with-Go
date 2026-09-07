@@ -54,13 +54,37 @@ Internal IDs `0..65535` map to that block; concurrent Sandboxes managed by the
 same Supervisor never share a block. A count of 131,072 therefore permits two
 active Sandboxes. Supplementary host groups are cleared during child startup.
 
-Execution also needs a root-owned writable cgroup v2 directory, selected by
+Creation also needs a root-owned writable cgroup v2 directory, selected by
 `--cgroup-root` (default `/sys/fs/cgroup`). The directory must be real and must
-not allow group or other writes. Linux must provide `cgroup.kill` (5.14+).
-The Supervisor creates an exclusive child cgroup for each Execution and
-removes it after its processes exit. The directory is deployment configuration,
-never a request parameter. A missing or unsupported cgroup v2 location returns
-`operation_unavailable` before any Python code starts.
+not allow group or other writes. Linux must provide `cgroup.kill` (5.14+),
+`clone3` with `CLONE_INTO_CGROUP`, and the `cpu`, `memory`, and `pids` controllers,
+including `memory.swap.max`. The configured directory must have those
+controllers available for delegation. The Supervisor enables them only within
+that configured root, creates a persistent budget parent per Sandbox, and
+places Init and each Execution in separate leaves. It does not move controllers
+from cgroup v1 or fall back to incomplete enforcement. Unavailable controllers,
+failed writes or unconfirmed limits return `operation_unavailable` before
+Workload code starts. The cgroup directory is deployment configuration, never
+a request parameter.
+
+Trusted Resource Budget flags (defaults shown) are:
+
+```text
+--cpu-millis 2000
+--memory-bytes 1073741824
+--swap-bytes 0
+--pids-limit 64
+```
+
+CPU uses a fixed 100,000-microsecond period; 2000 millicores produces
+`cpu.max = 200000 100000`. It limits aggregate CPU bandwidth, not CPU affinity
+or Execution duration. CPU values must be at least 10 millicores and fit the
+quota conversion. Memory must be positive, swap nonnegative, and both must be
+whole memory pages; PID count must be positive. Invalid budgets fail startup.
+Budgets include Init and Workload tasks (including threads), and surviving
+Workspace tmpfs charges remain under the same parent across Executions.
+Very small valid policies may be insufficient to start or keep Init alive;
+there is no promised minimum usable Python memory or task count.
 
 The Platform Operator must reserve these ranges against system accounts,
 other Supervisor instances, and other subordinate-ID users before startup.
@@ -242,6 +266,53 @@ the remainder without retaining it; invalid UTF-8 is replaced. These small
 preliminary results fit the current control frame. T11 will implement the full
 configured output budget and Execution Result contract.
 
+T09 adds `terminal_reason` and `resource_usage` to this bounded result:
+
+```json
+{
+  "execution_id": "step-1",
+  "exit_code": 137,
+  "stdout": "",
+  "stderr": "",
+  "truncated": false,
+  "terminal_reason": "memory_limit",
+  "resource_usage": {
+    "oom_events": 1,
+    "pid_limit_events": 0,
+    "cpu_usec": 35000,
+    "cpu_throttled_periods": 0,
+    "cpu_throttled_usec": 0
+  }
+}
+```
+
+This is an illustrative result, not a benchmark. `exited` means the process
+exited without an observed OOM or PID-budget event, including ordinary nonzero
+exits. `memory_limit` and `pids_limit` come from Sandbox cgroup event increments,
+never from exit code 137 alone. If both events occur, `memory_limit` takes
+precedence and both increments are retained. CPU throttling does not itself
+fail an Execution. All counters are deltas from before launcher startup to
+after descendant termination; CPU includes trusted Init activity in that
+interval. They are not per-process measurements or memory peaks.
+
+The kernel enforces limits during execution. The Supervisor checks OOM and
+PID events every 10 ms and kills the Execution group on exhaustion, including
+when Python catches a failed allocation or fork. It then performs the normal
+reap/readiness handshake. Kernel task-creation refusal does not depend on the
+polling interval. End-of-execution counters are reread to capture events that
+race with normal process exit. Failed event reads or cleanup are errors, not
+ordinary successful results.
+
+Init is born directly in its leaf cgroup and protected with host-configured
+`oom_score_adj=-1000`. Before opening the existing launch gate, the Supervisor
+sets the blocked Workload launcher's adjustment back to zero and confirms it.
+`memory.oom.group=1` is set only on the Execution leaf. These measures do not
+guarantee Init can survive every resource failure. If kernel evidence proves
+exhaustion but Init cannot finish its handshake, the result retains that
+resource reason with `exit_code=-1`, empty streams and `truncated=true` to
+indicate unavailable output/status; that Sandbox is invalidated and torn down.
+Usable Init state and complete cleanup are required for sequential reuse.
+
 ## Creation and lifetime boundary
 
 The Supervisor opens the selected root-owned, immutable Profile through its
@@ -320,10 +391,13 @@ Later creation using that identifier returns `sandbox_exists`; execution returns
 Retired identifiers are held in memory for this Supervisor lifetime. Clients
 must choose globally fresh Sandbox IDs, including across Supervisor restarts.
 T06 does not persist or reconstruct Sandbox state, reconcile crash leftovers,
-or promise cross-restart idempotency. It introduces no cgroup Resource Budget
-or crash-recovery contract; existing per-Execution cgroup cleanup is retained.
-Complete mount, capability, System Call Policy and configurable Resource Budget
-enforcement remain T07–T12. This is not the complete production security boundary.
+or promise cross-restart idempotency. T09 adds Sandbox cgroup Resource Budgets
+but no crash-recovery contract. Cgroup cleanup failures retain owned handles
+and the Sandbox identity reservation for a later `destroy_sandbox` retry;
+successful destruction waits for removal of the Execution, Init, and budget
+groups. Complete mount, capability, System Call Policy, storage, output and
+deadline enforcement remain T07, T08, T10–T12. This is not the complete
+production security boundary.
 
 ## Verification
 

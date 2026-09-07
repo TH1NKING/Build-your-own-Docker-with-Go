@@ -155,15 +155,16 @@ print('no-descendants-or-zombies')`)
 	if second.ExitCode != 0 || second.Stdout != "no-descendants-or-zombies\n" {
 		t.Fatalf("Execution inherited processes: %+v", second)
 	}
-	groups, err := os.ReadDir(os.Getenv("SANDBOX_CGROUP_ROOT"))
-	if err != nil {
-		t.Fatal(err)
+	// The Sandbox budget and Init leaf intentionally survive between
+	// Executions. Only full destruction should remove that persistent tree.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	destroyed, err := sandboxsupervisor.NewClient(fixture.socketPath).DestroySandbox(ctx,
+		sandboxsupervisor.DestroySandboxRequest{RequestID: "destroy", SandboxID: "run-descendants"})
+	if err != nil || destroyed.Error != nil || destroyed.Result == nil {
+		t.Fatalf("destroy descendant fixture: %+v, %v", destroyed, err)
 	}
-	for _, group := range groups {
-		if group.IsDir() {
-			t.Fatalf("completed Execution retained cgroup %s", group.Name())
-		}
-	}
+	assertNoResourceCgroups(t)
 }
 
 func TestSandboxExecutionHasOnlyStdioAndReadOnlyProfile(t *testing.T) {
@@ -236,11 +237,19 @@ func TestSandboxExecutionRejectsNulBeforeDisturbingWorkspace(t *testing.T) {
 }
 
 type sandboxExecutionResult struct {
-	ExecutionID string `json:"execution_id"`
-	ExitCode    int    `json:"exit_code"`
-	Stdout      string `json:"stdout"`
-	Stderr      string `json:"stderr"`
-	Truncated   bool   `json:"truncated"`
+	ExecutionID    string `json:"execution_id"`
+	ExitCode       int    `json:"exit_code"`
+	Stdout         string `json:"stdout"`
+	Stderr         string `json:"stderr"`
+	Truncated      bool   `json:"truncated"`
+	TerminalReason string `json:"terminal_reason"`
+	ResourceUsage  struct {
+		OOMEvents           uint64 `json:"oom_events"`
+		PIDLimitEvents      uint64 `json:"pid_limit_events"`
+		CPUUsec             uint64 `json:"cpu_usec"`
+		CPUThrottledPeriods uint64 `json:"cpu_throttled_periods"`
+		CPUThrottledUsec    uint64 `json:"cpu_throttled_usec"`
+	} `json:"resource_usage"`
 }
 
 func executeSandboxPython(t *testing.T, fixture sandboxSupervisorFixture, sandboxID, executionID, source string) sandboxExecutionResult {

@@ -699,6 +699,9 @@ func startSandboxSupervisor(t *testing.T, fixture sandboxSupervisorFixture, extr
 		"--profile-store", fixture.profileStore,
 		"--sandbox-root", fixture.sandboxRoot,
 	)
+	if cgroupRoot := os.Getenv("SANDBOX_CGROUP_ROOT"); cgroupRoot != "" {
+		command.Args = append(command.Args, "--cgroup-root", cgroupRoot)
+	}
 	command.Args = append(command.Args, extraArguments...)
 	if len(fixture.launchPrefix) != 0 {
 		arguments := append(append([]string{}, fixture.launchPrefix[1:]...), command.Args...)

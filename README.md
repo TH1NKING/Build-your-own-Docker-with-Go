@@ -62,7 +62,9 @@ bash tests/run-sandbox-creation-linux.sh
 
 T05 已接入 Profile Bundle 中的真实 Sandbox Init：可信 PID 1 通过私有继承管道处理顺序 Python Execution，Workload 使用内部 UID/GID 1000，共享同一 Workspace；每次执行结束后先终止并回收后代，再允许复用。准备经过摘要校验的源码缓存后，可运行 `PROFILE_BUNDLE_SOURCE_CACHE=/absolute/path/to/cache bash tests/run-sandbox-init-linux.sh` 验证真实 CPython 连续执行及 T06 生命周期。T05 的设计与测试记录见 [`T05 学习笔记`](docs/learning/t05-sandbox-init.md)。
 
-T06 增加公开 `DestroySandbox` 调用，并处理执行中断连、Init 丢失、创建阶段失败及服务正常关闭时的清理。销毁完成后才能释放身份范围；已结束的 Sandbox ID 在本次 Supervisor 运行期间不可复用。清理遇到陌生文件或被替换的目录会返回 `cleanup_failed`，保留现场供修复后重试。完整客户端示例、设计取舍和测试证据见 [`T06 学习笔记`](docs/learning/t06-sandbox-lifecycle.md)。Supervisor 崩溃后的持久恢复不在 T06 范围内，T07–T12 的后续安全及资源合同也仍需完成，当前不能据此用于任意不可信 Workload。
+T06 增加公开 `DestroySandbox` 调用，并处理执行中断连、Init 丢失、创建阶段失败及服务正常关闭时的清理。销毁完成后才能释放身份范围；已结束的 Sandbox ID 在本次 Supervisor 运行期间不可复用。清理遇到陌生文件或被替换的目录会返回 `cleanup_failed`，保留现场供修复后重试。完整客户端示例、设计取舍和测试证据见 [`T06 学习笔记`](docs/learning/t06-sandbox-lifecycle.md)。Supervisor 崩溃后的持久恢复不在 T06 范围内。
+
+T09 使用持续存在的 Sandbox cgroup v2 父组执行 CPU、内存、swap 和 PID 资源预算，Init 与每次 Execution 使用独立子组。默认预算为 2 CPU、1 GiB 内存、禁用 swap、64 个内核任务，均由可信启动配置决定。内核 CPU 节流与内存/PID 超限分别报告；跨 Execution 留存的 Workspace 内存继续计入父预算。运行验收需要已委派 `cpu memory pids` 控制器的 cgroup v2 父目录，可通过 `SANDBOX_TEST_CGROUP_PARENT` 指定。原理、方案比较与代码阅读路线见 [`T09 学习笔记`](docs/learning/t09-resource-budgets.md)。T07、T08、T10–T12 的后续安全及资源合同仍需完成，当前不能据此用于任意不可信 Workload。
 
 ## 使用 Go Runtime Lab
 
