@@ -75,7 +75,7 @@ func TestPythonDataV1ProductionBuildIsByteReproducible(t *testing.T) {
 	}
 	wantComponentDigests := map[string]string{
 		"rootfs":             "sha256:cdfacca4d70a2045c924b491e9d7516fbf3c67dbce950b70f1207c204d3a46aa",
-		"system-call-policy": "sha256:6003c746e5e4156c755f1f365ad0f605420c5236231125e97738ee6af54afdc3",
+		"system-call-policy": "sha256:6047a041a38f29123ac52175fdcbf7b6597645f0706124a34e2b51a07a7ce22d",
 		"sandbox-init":       "sha256:" + fileSHA256(t, initPath),
 	}
 	for _, component := range manifest.Components {

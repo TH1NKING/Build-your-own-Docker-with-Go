@@ -9,5 +9,143 @@
     "action": "errno",
     "errno": 1
   },
-  "rules": []
+  "rules": [
+    {
+      "names": [
+        "access"
+      ],
+      "action": "allow",
+      "arguments": []
+    },
+    {
+      "names": [
+        "arch_prctl"
+      ],
+      "action": "allow",
+      "arguments": [
+        {
+          "index": 0,
+          "operator": "equal",
+          "value": 4098,
+          "mask": 0
+        }
+      ]
+    },
+    {
+      "names": [
+        "brk",
+        "chdir",
+        "chmod",
+        "clock_getres",
+        "clock_gettime",
+        "clock_nanosleep"
+      ],
+      "action": "allow",
+      "arguments": []
+    },
+    {
+      "names": [
+        "clone"
+      ],
+      "action": "allow",
+      "arguments": [
+        {
+          "index": 0,
+          "operator": "masked-equal",
+          "value": 0,
+          "mask": 18446744073684561920
+        }
+      ]
+    },
+    {
+      "names": [
+        "close",
+        "close_range",
+        "dup",
+        "dup2",
+        "dup3",
+        "execve",
+        "exit",
+        "exit_group",
+        "faccessat",
+        "fchmod",
+        "fcntl",
+        "fdatasync",
+        "fork",
+        "fstat",
+        "fsync",
+        "ftruncate",
+        "futex",
+        "getcwd",
+        "getdents64",
+        "getegid",
+        "geteuid",
+        "getgid",
+        "getgroups",
+        "getpid",
+        "getppid",
+        "getrandom",
+        "getresgid",
+        "getresuid",
+        "getrlimit",
+        "gettid",
+        "getuid",
+        "kill",
+        "link",
+        "lseek",
+        "lstat",
+        "madvise",
+        "membarrier",
+        "mkdir",
+        "mmap",
+        "mprotect",
+        "mremap",
+        "munmap",
+        "nanosleep",
+        "newfstatat",
+        "open",
+        "openat",
+        "pause",
+        "pipe",
+        "pipe2",
+        "poll",
+        "ppoll",
+        "pread64",
+        "prlimit64",
+        "pselect6",
+        "pwrite64",
+        "read",
+        "readlink",
+        "readlinkat",
+        "readv",
+        "rename",
+        "restart_syscall",
+        "rmdir",
+        "rseq",
+        "rt_sigaction",
+        "rt_sigprocmask",
+        "rt_sigreturn",
+        "rt_sigsuspend",
+        "sched_getaffinity",
+        "sched_yield",
+        "select",
+        "set_robust_list",
+        "set_tid_address",
+        "setsid",
+        "sigaltstack",
+        "stat",
+        "statx",
+        "symlink",
+        "tgkill",
+        "umask",
+        "unlink",
+        "vfork",
+        "wait4",
+        "write",
+        "writev"
+      ],
+      "action": "allow",
+      "arguments": []
+    }
+  ]
 }

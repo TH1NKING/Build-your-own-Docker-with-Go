@@ -81,7 +81,7 @@ jobs:
             -test.v \
             -test.run='^(TestProfileBundleInstall|TestPythonDataV1Production)'
 
-      - name: Verify Python Executions, lifecycle, and cgroup Resource Budgets
+      - name: Verify Python Executions, System Call Policy, lifecycle, and Resource Budgets
         shell: bash
         run: PROFILE_BUNDLE_SOURCE_CACHE="$RUNNER_TEMP/profile-sources" bash tests/run-sandbox-init-linux.sh
 

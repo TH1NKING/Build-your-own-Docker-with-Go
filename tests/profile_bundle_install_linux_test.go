@@ -83,6 +83,19 @@ func TestProfileBundleInstallPublishesVerifiedRootOwnedProfile(t *testing.T) {
 			t.Fatalf("reserved mountpoint %s must be an empty directory: entries=%#v err=%v", name, entries, err)
 		}
 	}
+	policyPath := filepath.Join(installedPath, "rootfs", "system-call-policy.json")
+	policyBytes, err := os.ReadFile(policyPath)
+	if err != nil || !bytes.Equal(policyBytes, validFixturePolicy()) {
+		t.Fatalf("installed root Policy differs from its verified component: %q, %v", policyBytes, err)
+	}
+	policyInfo, err := os.Lstat(policyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policyStat, ok := policyInfo.Sys().(*syscall.Stat_t)
+	if !ok || policyStat.Uid != 0 || policyStat.Gid != 0 || !policyInfo.Mode().IsRegular() || policyInfo.Mode().Perm() != 0o444 {
+		t.Fatalf("installed Policy must be root-owned mode 0444: %#v", policyInfo)
+	}
 
 	writeAttempt := exec.Command(
 		"setpriv",
