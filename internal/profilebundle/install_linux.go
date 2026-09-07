@@ -19,6 +19,8 @@ import (
 	"sort"
 	"strings"
 	"syscall"
+
+	"github.com/TH1NKING/Build-your-own-Docker-with-Go/internal/systemcallpolicy"
 )
 
 const maximumBundleSize = 2 << 30
@@ -467,7 +469,7 @@ func extractApprovedBundle(stageRoot *os.Root, archive *os.File) error {
 	if err != nil {
 		return fmt.Errorf("read installed System Call Policy: %w", err)
 	}
-	canonicalPolicy, err := decodeSystemCallPolicy(policyBytes)
+	canonicalPolicy, err := systemcallpolicy.Canonical(policyBytes)
 	if err != nil {
 		return err
 	}

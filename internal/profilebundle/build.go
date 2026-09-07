@@ -140,10 +140,6 @@ func readSystemCallPolicy(policyPath string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return decodeSystemCallPolicy(policyBytes)
-}
-
-func decodeSystemCallPolicy(policyBytes []byte) ([]byte, error) {
 	return systemcallpolicy.Canonical(policyBytes)
 }
 
