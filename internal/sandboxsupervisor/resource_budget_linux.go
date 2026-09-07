@@ -6,19 +6,21 @@ import (
 	"errors"
 	"math"
 	"os"
+	"time"
 )
 
 // ResourceBudget is trusted Supervisor startup policy. Workloads and Worker
 // requests cannot select or override these finite Sandbox allowances.
 type ResourceBudget struct {
-	CPUMillis   int64
-	MemoryBytes int64
-	SwapBytes   int64
-	PIDs        int64
+	CPUMillis        int64
+	MemoryBytes      int64
+	SwapBytes        int64
+	PIDs             int64
+	ExecutionTimeout time.Duration
 }
 
 func DefaultResourceBudget() ResourceBudget {
-	return ResourceBudget{CPUMillis: 2000, MemoryBytes: 1 << 30, SwapBytes: 0, PIDs: 64}
+	return ResourceBudget{CPUMillis: 2000, MemoryBytes: 1 << 30, SwapBytes: 0, PIDs: 64, ExecutionTimeout: 60 * time.Second}
 }
 
 func (budget ResourceBudget) validate() error {
@@ -34,6 +36,9 @@ func (budget ResourceBudget) validate() error {
 	}
 	if budget.PIDs <= 0 {
 		return errors.New("Resource Budget PIDs must be positive")
+	}
+	if budget.ExecutionTimeout <= 0 {
+		return errors.New("Resource Budget Execution timeout must be positive")
 	}
 	return nil
 }

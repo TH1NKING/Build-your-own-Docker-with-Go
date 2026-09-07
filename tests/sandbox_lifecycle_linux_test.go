@@ -16,6 +16,24 @@ import (
 	"github.com/TH1NKING/Build-your-own-Docker-with-Go/internal/sandboxsupervisor"
 )
 
+// Readiness is announced only after a detached grandchild exists and retains
+// stdio. The parent alone installs SIGUSR1 for the host-observable handshake.
+const detachedCancellationWorkload = `import os, signal, time
+r, w = os.pipe()
+if os.fork() == 0:
+    os.close(r)
+    os.setsid()
+    if os.fork() != 0: os._exit(0)
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    os.write(w, b'R')
+    os.close(w)
+    while True: time.sleep(60)
+os.close(w)
+assert os.read(r, 1) == b'R'
+os.close(r)
+signal.signal(signal.SIGUSR1, lambda *_: None)
+signal.pause()`
+
 func TestSandboxLifecycleShutdownClosesIdleClients(t *testing.T) {
 	fixture, identity := installedSandboxExecutionFixture(t)
 	stop := startSandboxSupervisor(t, fixture, "--subuid-start", "200000", "--subgid-start", "300000", "--subid-count", "65536")
@@ -56,11 +74,12 @@ func TestSandboxLifecycleConcurrentDestroyTerminatesActiveExecution(t *testing.T
 	go func() {
 		response, _ := client.ExecutePython(ctx, sandboxsupervisor.ExecutePythonRequest{
 			RequestID: "active", SandboxID: "run-active", ExecutionID: "active",
-			Source: "import signal; signal.signal(signal.SIGUSR1, lambda *_: None); signal.pause()",
+			Source: detachedCancellationWorkload,
 		})
 		finished <- response
 	}()
 	workloadPID := waitForSandboxSignalHandler(t, initPID)
+	workloadGroup := observedResourceCgroup(t, strconv.Itoa(workloadPID))
 	// A rejected request closes its own connection without owning cancellation
 	// rights over the already running Execution or its Workspace.
 	busy, err := client.ExecutePython(ctx, sandboxsupervisor.ExecutePythonRequest{RequestID: "busy", SandboxID: "run-active", ExecutionID: "busy", Source: "print(42)"})
@@ -88,6 +107,10 @@ func TestSandboxLifecycleConcurrentDestroyTerminatesActiveExecution(t *testing.T
 	if pids := sandboxProcessesForSubordinateMapping(t, 200000, 65536); len(pids) != 0 {
 		t.Fatalf("destroy acknowledged surviving Workload: %v", pids)
 	}
+	if _, err := os.Stat(workloadGroup); !os.IsNotExist(err) {
+		t.Fatalf("destroy acknowledged before removing Execution cgroup: %v", err)
+	}
+	assertNoResourceCgroups(t)
 	assertSandboxSupervisorErrorCode(t, exchangeSandboxSupervisorMessage(t, fixture.socketPath, createSandboxWireRequest(t, "reuse", "run-active", identity)), "sandbox_exists")
 }
 
@@ -103,11 +126,12 @@ func TestSandboxLifecycleDisconnectDestroysActiveSandbox(t *testing.T) {
 	go func() {
 		_, err := sandboxsupervisor.NewClient(fixture.socketPath).ExecutePython(ctx, sandboxsupervisor.ExecutePythonRequest{
 			RequestID: "active", SandboxID: "run-abandoned", ExecutionID: "active",
-			Source: "import signal; signal.signal(signal.SIGUSR1, lambda *_: None); signal.pause()",
+			Source: detachedCancellationWorkload,
 		})
 		finished <- err
 	}()
 	workloadPID := waitForSandboxSignalHandler(t, initPID)
+	workloadGroup := observedResourceCgroup(t, strconv.Itoa(workloadPID))
 	cancel()
 	if err := <-finished; err == nil {
 		t.Fatal("cancelled client returned successful transport")
@@ -125,6 +149,13 @@ func TestSandboxLifecycleDisconnectDestroysActiveSandbox(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+	if pids := sandboxProcessesForSubordinateMapping(t, 200000, 65536); len(pids) != 0 {
+		t.Fatalf("client cancellation retained detached descendants: %v", pids)
+	}
+	if _, err := os.Stat(workloadGroup); !os.IsNotExist(err) {
+		t.Fatalf("client cancellation retained Execution cgroup: %v", err)
+	}
+	assertNoResourceCgroups(t)
 	assertSandboxSupervisorErrorCode(t, exchangeSandboxSupervisorMessage(t, fixture.socketPath,
 		createSandboxWireRequest(t, "stale", "run-abandoned", identity)), "sandbox_exists")
 	assertSandboxCreated(t, exchangeSandboxSupervisorMessage(t, fixture.socketPath,

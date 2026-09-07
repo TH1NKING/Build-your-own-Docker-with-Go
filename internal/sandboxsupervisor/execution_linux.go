@@ -20,6 +20,8 @@ type executePythonParameters struct {
 	Stdin       string `json:"stdin"`
 }
 
+const initTransportTimeout = 5 * time.Second
+
 func (service *server) executePythonResponse(operation *controlOperation, requestID string, raw json.RawMessage) responseEnvelope {
 	var parameters executePythonParameters
 	if err := decodeStrictJSON(raw, &parameters, "sandbox_id", "execution_id", "source", "stdin"); err != nil || parameters.Source == "" || strings.ContainsRune(parameters.Source, 0) || len(parameters.Source) > 32<<10 || len(parameters.Stdin) > 8<<10 {
@@ -81,11 +83,9 @@ func (creator *sandboxCreator) execute(operation *controlOperation, parameters e
 	if err != nil {
 		return nil, ErrorCodeOperationUnavailable
 	}
-	// A bounded transport guard until the configurable Execution deadline
-	// contract is implemented. This is never renewed by Workload activity.
-	deadline := time.Now().Add(60 * time.Second)
-	_ = sandbox.requests.SetWriteDeadline(deadline)
-	_ = sandbox.responses.SetReadDeadline(deadline)
+	if err := setInitTransportDeadline(sandbox); err != nil {
+		return nil, ErrorCodeExecutionFailed
+	}
 	if err := sendInitRequest(sandbox.requests, initRequest{Action: "start", Source: parameters.Source, Stdin: parameters.Stdin}); err != nil {
 		return nil, ErrorCodeExecutionFailed
 	}
@@ -103,10 +103,16 @@ func (creator *sandboxCreator) execute(operation *controlOperation, parameters e
 	if err := setProcessOOMScore(hostPID, 0); err != nil {
 		return nil, ErrorCodeExecutionFailed
 	}
+	// Start one monotonic deadline just before releasing the trusted launcher.
+	// Its expiry kills only this Execution, never the persistent Init context.
+	if err := sandbox.responses.SetReadDeadline(time.Time{}); err != nil {
+		return nil, ErrorCodeExecutionFailed
+	}
+	executionDeadline := time.Now().Add(creator.config.ResourceBudget.ExecutionTimeout)
 	if err := sendInitRequest(sandbox.requests, initRequest{Action: "run"}); err != nil {
 		return nil, ErrorCodeExecutionFailed
 	}
-	waitErr := waitBudgetedExecution(sandbox, group, before)
+	timedOut, waitErr := waitBudgetedExecution(sandbox, group, before, executionDeadline)
 	if err := group.killAndWait(); err != nil {
 		return nil, ErrorCodeExecutionFailed
 	}
@@ -123,8 +129,13 @@ func (creator *sandboxCreator) execute(operation *controlOperation, parameters e
 		reason = ExecutionMemoryLimit
 	} else if usage.PIDLimitEvents != 0 {
 		reason = ExecutionPIDLimit
+	} else if timedOut {
+		reason = ExecutionTimedOut
 	}
 	if waitErr != nil {
+		return incompleteResourceResult(parameters.ExecutionID, reason, usage)
+	}
+	if err := setInitTransportDeadline(sandbox); err != nil {
 		return incompleteResourceResult(parameters.ExecutionID, reason, usage)
 	}
 	if err := sendInitRequest(sandbox.requests, initRequest{Action: "reap"}); err != nil {
@@ -146,8 +157,8 @@ func incompleteResourceResult(executionID string, reason ExecutionTerminalReason
 	if reason == ExecutionExited {
 		return nil, ErrorCodeExecutionFailed
 	}
-	// Host kernel evidence survives loss of Init, but its exit status and
-	// captured output do not. Never manufacture an exit code from an OOM.
+	// Host budget evidence survives loss of Init, but its exit status and
+	// captured output do not. Never manufacture an exit code from that evidence.
 	// The caller's failed-handshake teardown invalidates this Sandbox.
 	return &ExecutePythonResult{ExecutionID: executionID, ExitCode: -1, Truncated: true, TerminalReason: reason, ResourceUsage: usage}, ""
 }
@@ -164,29 +175,74 @@ func setProcessOOMScore(pid, score int) error {
 	return nil
 }
 
-func waitBudgetedExecution(sandbox *createdSandbox, group *cgroup, before ExecutionResourceUsage) error {
+func setInitTransportDeadline(sandbox *createdSandbox) error {
+	deadline := time.Now().Add(initTransportTimeout)
+	if err := sandbox.requests.SetWriteDeadline(deadline); err != nil {
+		return err
+	}
+	return sandbox.responses.SetReadDeadline(deadline)
+}
+
+func waitBudgetedExecution(sandbox *createdSandbox, group *cgroup, before ExecutionResourceUsage, deadline time.Time) (bool, error) {
 	exited := make(chan error, 1)
 	go func() {
 		_, err := receiveInitResponse(sandbox.responses, "exited")
 		exited <- err
 	}()
+	received := false
+	defer func() {
+		if !received {
+			// Join the sole pipe reader on every error path before cleanup or
+			// another handshake can consume bytes from this same Init channel.
+			_ = sandbox.responses.SetReadDeadline(time.Now())
+			<-exited
+		}
+	}()
+	timer := time.NewTimer(time.Until(deadline))
+	defer timer.Stop()
+	deadlineReached := timer.C
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
 	terminated := false
+	timedOut := false
+	terminate := func() error {
+		terminated = true
+		deadlineReached = nil
+		// Killing and collecting the result get a separate guard. An expired
+		// execution deadline must not interrupt Init's exit/reap handshake.
+		if err := sandbox.responses.SetReadDeadline(time.Now().Add(initTransportTimeout)); err != nil {
+			return err
+		}
+		return group.killAndWait()
+	}
 	for {
 		select {
 		case err := <-exited:
-			return err
+			received = true
+			return timedOut, err
+		case <-sandbox.ctx.Done():
+			return timedOut, sandbox.ctx.Err()
+		case <-deadlineReached:
+			// Prefer a complete exit already observed at the deadline boundary.
+			select {
+			case err := <-exited:
+				received = true
+				return timedOut, err
+			default:
+			}
+			timedOut = true
+			if err := terminate(); err != nil {
+				return timedOut, err
+			}
 		case <-ticker.C:
 			after, err := sandbox.cgroups.budget.resourceEvents()
 			if err != nil || after.OOMEvents < before.OOMEvents || after.PIDLimitEvents < before.PIDLimitEvents {
-				return errors.New("cannot observe Execution Resource Budget")
+				return timedOut, errors.New("cannot observe Execution Resource Budget")
 			}
 			if (after.OOMEvents > before.OOMEvents || after.PIDLimitEvents > before.PIDLimitEvents) && !terminated {
-				if err := group.killAndWait(); err != nil {
-					return err
+				if err := terminate(); err != nil {
+					return timedOut, err
 				}
-				terminated = true
 			}
 		}
 	}
