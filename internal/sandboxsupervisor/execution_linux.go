@@ -57,11 +57,8 @@ func (creator *sandboxCreator) execute(operation *controlOperation, parameters e
 		return nil, ErrorCodeSandboxNotFound
 	default:
 	}
-	group, err := newExecutionCgroup(creator.config.CgroupRoot)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "Execution cgroup:", err)
-		return nil, ErrorCodeOperationUnavailable
-	}
+	group, err := newCgroup(sandbox.cgroups.budget.group)
+	sandbox.cgroups.execution = group
 	complete := false
 	defer func() {
 		if !complete {
@@ -70,10 +67,20 @@ func (creator *sandboxCreator) execute(operation *controlOperation, parameters e
 			_ = sandbox.process.Kill()
 			<-sandbox.exited
 		}
-		if err := group.close(); err != nil {
-			fmt.Fprintln(os.Stderr, "Execution cgroup cleanup:", err)
-		}
+		// Successful completion explicitly removes the Execution cgroup below.
+		// Failed or uncertain cleanup stays owned by the Sandbox teardown.
 	}()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Execution cgroup:", err)
+		return nil, ErrorCodeOperationUnavailable
+	}
+	if err := group.set("memory.oom.group", "1"); err != nil {
+		return nil, ErrorCodeOperationUnavailable
+	}
+	before, err := sandbox.cgroups.budget.resourceUsage()
+	if err != nil {
+		return nil, ErrorCodeOperationUnavailable
+	}
 	// A bounded transport guard until the configurable Execution deadline
 	// contract is implemented. This is never renewed by Workload activity.
 	deadline := time.Now().Add(60 * time.Second)
@@ -93,24 +100,96 @@ func (creator *sandboxCreator) execute(operation *controlOperation, parameters e
 	if err := group.attach(hostPID); err != nil {
 		return nil, ErrorCodeExecutionFailed
 	}
+	if err := setProcessOOMScore(hostPID, 0); err != nil {
+		return nil, ErrorCodeExecutionFailed
+	}
 	if err := sendInitRequest(sandbox.requests, initRequest{Action: "run"}); err != nil {
 		return nil, ErrorCodeExecutionFailed
 	}
-	if _, err := receiveInitResponse(sandbox.responses, "exited"); err != nil {
-		return nil, ErrorCodeExecutionFailed
-	}
+	waitErr := waitBudgetedExecution(sandbox, group, before)
 	if err := group.killAndWait(); err != nil {
 		return nil, ErrorCodeExecutionFailed
 	}
-	if err := sendInitRequest(sandbox.requests, initRequest{Action: "reap"}); err != nil {
-		return nil, ErrorCodeExecutionFailed
-	}
-	result, err := receiveInitResponse(sandbox.responses, "ready")
+	after, err := sandbox.cgroups.budget.resourceUsage()
 	if err != nil {
 		return nil, ErrorCodeExecutionFailed
 	}
+	usage, err := after.since(before)
+	if err != nil {
+		return nil, ErrorCodeExecutionFailed
+	}
+	reason := ExecutionExited
+	if usage.OOMEvents != 0 {
+		reason = ExecutionMemoryLimit
+	} else if usage.PIDLimitEvents != 0 {
+		reason = ExecutionPIDLimit
+	}
+	if waitErr != nil {
+		return incompleteResourceResult(parameters.ExecutionID, reason, usage)
+	}
+	if err := sendInitRequest(sandbox.requests, initRequest{Action: "reap"}); err != nil {
+		return incompleteResourceResult(parameters.ExecutionID, reason, usage)
+	}
+	result, err := receiveInitResponse(sandbox.responses, "ready")
+	if err != nil {
+		return incompleteResourceResult(parameters.ExecutionID, reason, usage)
+	}
+	if err := group.close(); err != nil {
+		return nil, ErrorCodeExecutionFailed
+	}
+	sandbox.cgroups.execution = nil
 	complete = true
-	return &ExecutePythonResult{ExecutionID: parameters.ExecutionID, ExitCode: result.ExitCode, Stdout: result.Stdout, Stderr: result.Stderr, Truncated: result.Truncated}, ""
+	return &ExecutePythonResult{ExecutionID: parameters.ExecutionID, ExitCode: result.ExitCode, Stdout: result.Stdout, Stderr: result.Stderr, Truncated: result.Truncated, TerminalReason: reason, ResourceUsage: usage}, ""
+}
+
+func incompleteResourceResult(executionID string, reason ExecutionTerminalReason, usage ExecutionResourceUsage) (*ExecutePythonResult, ErrorCode) {
+	if reason == ExecutionExited {
+		return nil, ErrorCodeExecutionFailed
+	}
+	// Host kernel evidence survives loss of Init, but its exit status and
+	// captured output do not. Never manufacture an exit code from an OOM.
+	// The caller's failed-handshake teardown invalidates this Sandbox.
+	return &ExecutePythonResult{ExecutionID: executionID, ExitCode: -1, Truncated: true, TerminalReason: reason, ResourceUsage: usage}, ""
+}
+
+func setProcessOOMScore(pid, score int) error {
+	path := filepath.Join("/proc", strconv.Itoa(pid), "oom_score_adj")
+	if err := os.WriteFile(path, []byte(strconv.Itoa(score)), 0); err != nil {
+		return fmt.Errorf("set process OOM adjustment: %w", err)
+	}
+	actual, err := os.ReadFile(path)
+	if err != nil || strings.TrimSpace(string(actual)) != strconv.Itoa(score) {
+		return errors.New("kernel did not confirm process OOM adjustment")
+	}
+	return nil
+}
+
+func waitBudgetedExecution(sandbox *createdSandbox, group *cgroup, before ExecutionResourceUsage) error {
+	exited := make(chan error, 1)
+	go func() {
+		_, err := receiveInitResponse(sandbox.responses, "exited")
+		exited <- err
+	}()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	terminated := false
+	for {
+		select {
+		case err := <-exited:
+			return err
+		case <-ticker.C:
+			after, err := sandbox.cgroups.budget.resourceEvents()
+			if err != nil || after.OOMEvents < before.OOMEvents || after.PIDLimitEvents < before.PIDLimitEvents {
+				return errors.New("cannot observe Execution Resource Budget")
+			}
+			if (after.OOMEvents > before.OOMEvents || after.PIDLimitEvents > before.PIDLimitEvents) && !terminated {
+				if err := group.killAndWait(); err != nil {
+					return err
+				}
+				terminated = true
+			}
+		}
+	}
 }
 
 func sendInitRequest(file *os.File, request initRequest) error {

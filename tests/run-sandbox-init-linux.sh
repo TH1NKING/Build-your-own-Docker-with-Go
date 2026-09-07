@@ -34,22 +34,18 @@ if [[ "$EUID" != 0 ]]; then privilege=(sudo -n); fi
 exec "${privilege[@]}" unshare --mount --pid --fork --mount-proc --net --propagation private \
   bash -c '
     set -euo pipefail
+    # Stdin carries the trusted helper across sudo and a covered host /tmp.
+    source /proc/self/fd/0
+    exec </dev/null
     cd -- "$1"
     mount -t tmpfs -o size=1g,mode=1777,nosuid,nodev tmpfs /tmp
     mkdir /tmp/t05-bin
     cp -- ./sandboxd ./sandbox-init ./sandbox-waiting-init ./profile-bundle ./t05-tests ./python.bundle /tmp/t05-bin/
     cd /
-    cgroup_mount=/sys/fs/cgroup
-    if [[ "$(stat -f -c %t "$cgroup_mount")" != 63677270 ]]; then
-      cgroup_mount=/sys/fs/cgroup/unified
-    fi
-    [[ "$(stat -f -c %t "$cgroup_mount")" == 63677270 ]] || { echo "cgroup v2 is required" >&2; exit 1; }
-    cgroup_root="$(mktemp -d "$cgroup_mount/sandbox-t05-XXXXXX")"
-    trap '\''rmdir -- "$cgroup_root"'\'' EXIT
-    export SANDBOX_CGROUP_ROOT="$cgroup_root"
+    prepare_sandbox_test_cgroup sandbox-t05 "${2:-}"
     export SANDBOXD_CLI=/tmp/t05-bin/sandboxd SANDBOX_INIT_CLI=/tmp/t05-bin/sandbox-init
     export SANDBOX_WAITING_INIT_CLI=/tmp/t05-bin/sandbox-waiting-init
     export PROFILE_BUNDLE_CLI=/tmp/t05-bin/profile-bundle SANDBOX_EXECUTION_BUNDLE=/tmp/t05-bin/python.bundle
     uname -sr
-    /tmp/t05-bin/t05-tests -test.v -test.run="${SANDBOX_TEST_RUN:-^TestSandbox(Execution|Lifecycle)}" -test.timeout=300s
-  ' sandbox-init "$sandbox_bin_dir"
+    /tmp/t05-bin/t05-tests -test.v -test.run="${3:-^TestSandbox(Execution|Lifecycle)}" -test.timeout=300s
+  ' sandbox-init "$sandbox_bin_dir" "${SANDBOX_TEST_CGROUP_PARENT:-}" "${SANDBOX_TEST_RUN:-}" < "$repository_root/tests/sandbox-cgroup-fixture.sh"

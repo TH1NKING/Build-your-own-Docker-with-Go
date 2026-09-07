@@ -138,8 +138,9 @@ type createdSandbox struct {
 	responses      *os.File
 	done           chan struct{}
 	exited         chan struct{}
-	terminating    bool  // guarded by creator.mu
-	cleanupErr     error // guarded by creator.mu; retryable after done closes
+	terminating    bool            // guarded by creator.mu
+	cleanupErr     error           // guarded by creator.mu; retryable after done closes
+	cgroups        *sandboxCgroups // owned by creation, then guarded by execution
 }
 
 func newSandboxCreator(ctx context.Context, config ServerConfig, root *os.Root) *sandboxCreator {
@@ -197,6 +198,11 @@ func (creator *sandboxCreator) release(id string, sandbox *createdSandbox, retir
 }
 
 func (creator *sandboxCreator) releaseLocked(id string, sandbox *createdSandbox, retire bool) error {
+	if err := sandbox.cgroups.close(); err != nil {
+		sandbox.cleanupErr = err
+		fmt.Fprintln(os.Stderr, "Sandbox cgroup cleanup:", err)
+		return err
+	}
 	// Only remove the empty directory this creation owns. Never recurse
 	// into an unexpected tree or remove a pre-existing Sandbox identifier.
 	info, err := creator.root.Lstat(id)
@@ -239,6 +245,17 @@ func (creator *sandboxCreator) create(operation *controlOperation, id string, pr
 			close(sandbox.done)
 		}
 	}()
+	var err error
+	sandbox.cgroups, err = newSandboxCgroups(creator.config.CgroupRoot, creator.config.ResourceBudget)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Sandbox Resource Budget:", err)
+		return ErrorCodeOperationUnavailable
+	}
+	initGroup, err := sandbox.cgroups.init.group.Open(".")
+	if err != nil {
+		return ErrorCodeCreationFailed
+	}
+	defer initGroup.Close()
 	readyReader, readyWriter, err := os.Pipe()
 	if err != nil {
 		return ErrorCodeCreationFailed
@@ -277,6 +294,8 @@ func (creator *sandboxCreator) create(operation *controlOperation, id string, pr
 	// Force an exec-managed pipe even when the Supervisor logs to a host file.
 	command.Stderr = struct{ io.Writer }{os.Stderr}
 	command.SysProcAttr = &syscall.SysProcAttr{
+		UseCgroupFD:                true,
+		CgroupFD:                   int(initGroup.Fd()),
 		Cloneflags:                 syscall.CLONE_NEWUSER | syscall.CLONE_NEWNS | syscall.CLONE_NEWPID | syscall.CLONE_NEWNET,
 		UidMappings:                []syscall.SysProcIDMap{{ContainerID: 0, HostID: int(creator.config.SubUIDStart + sandbox.identityOffset), Size: sandboxIdentityCount}},
 		GidMappings:                []syscall.SysProcIDMap{{ContainerID: 0, HostID: int(creator.config.SubGIDStart + sandbox.identityOffset), Size: sandboxIdentityCount}},
@@ -287,12 +306,22 @@ func (creator *sandboxCreator) create(operation *controlOperation, id string, pr
 		fmt.Fprintln(os.Stderr, "Sandbox creation:", err)
 		return ErrorCodeCreationFailed
 	}
+	// Prefer Workloads as OOM victims. This is not a liveness guarantee: loss
+	// of Init still invalidates the Sandbox. Clear the inherited adjustment
+	// on every blocked Workload launcher before granting permission to run.
+	if err := setProcessOOMScore(command.Process.Pid, -1000); err != nil {
+		fmt.Fprintln(os.Stderr, "Sandbox Init OOM policy:", err)
+		_ = command.Process.Kill()
+		_ = command.Wait()
+		return ErrorCodeCreationFailed
+	}
 	readyWriter.Close()
 	requestReader.Close()
 	responseWriter.Close()
 	_ = readyReader.SetReadDeadline(time.Now().Add(3 * time.Second))
 	var ready [1]byte
 	if _, err := io.ReadFull(readyReader, ready[:]); err != nil || ready[0] != 'R' {
+		fmt.Fprintln(os.Stderr, "Sandbox Init readiness:", err, ready[0])
 		_ = command.Process.Kill()
 		_ = command.Wait()
 		return ErrorCodeCreationFailed

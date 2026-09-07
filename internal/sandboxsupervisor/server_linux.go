@@ -16,13 +16,14 @@ import (
 )
 
 type ServerConfig struct {
-	SocketPath   string
-	ProfileStore string
-	SandboxRoot  string
-	SubUIDStart  uint
-	SubGIDStart  uint
-	SubIDCount   uint
-	CgroupRoot   string
+	SocketPath     string
+	ProfileStore   string
+	SandboxRoot    string
+	SubUIDStart    uint
+	SubGIDStart    uint
+	SubIDCount     uint
+	CgroupRoot     string
+	ResourceBudget ResourceBudget
 }
 
 type requestEnvelope struct {
@@ -54,6 +55,9 @@ const maximumConcurrentControlConnections = 16
 func Serve(ctx context.Context, config ServerConfig) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	if err := config.ResourceBudget.validate(); err != nil {
+		return err
+	}
 	if err := sealInheritedDescriptors(); err != nil {
 		return err
 	}

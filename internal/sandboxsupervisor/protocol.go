@@ -62,11 +62,29 @@ type ExecutePythonResponse struct {
 }
 
 type ExecutePythonResult struct {
-	ExecutionID string `json:"execution_id"`
-	ExitCode    int    `json:"exit_code"`
-	Stdout      string `json:"stdout"`
-	Stderr      string `json:"stderr"`
-	Truncated   bool   `json:"truncated"`
+	ExecutionID    string                  `json:"execution_id"`
+	ExitCode       int                     `json:"exit_code"`
+	Stdout         string                  `json:"stdout"`
+	Stderr         string                  `json:"stderr"`
+	Truncated      bool                    `json:"truncated"`
+	TerminalReason ExecutionTerminalReason `json:"terminal_reason"`
+	ResourceUsage  ExecutionResourceUsage  `json:"resource_usage"`
+}
+
+type ExecutionTerminalReason string
+
+const (
+	ExecutionExited      ExecutionTerminalReason = "exited"
+	ExecutionMemoryLimit ExecutionTerminalReason = "memory_limit"
+	ExecutionPIDLimit    ExecutionTerminalReason = "pids_limit"
+)
+
+type ExecutionResourceUsage struct {
+	OOMEvents           uint64 `json:"oom_events"`
+	PIDLimitEvents      uint64 `json:"pid_limit_events"`
+	CPUUsec             uint64 `json:"cpu_usec"`
+	CPUThrottledPeriods uint64 `json:"cpu_throttled_periods"`
+	CPUThrottledUsec    uint64 `json:"cpu_throttled_usec"`
 }
 
 type CreateSandboxRequest struct {
