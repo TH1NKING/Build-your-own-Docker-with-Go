@@ -9,6 +9,9 @@ import (
 	"time"
 )
 
+// A finite protocol ceiling, independent of the operator's lower capture budget.
+const maximumOutputBytes = 8 << 20
+
 // ResourceBudget is trusted Supervisor startup policy. Workloads and Worker
 // requests cannot select or override these finite Sandbox allowances.
 type ResourceBudget struct {
@@ -17,10 +20,12 @@ type ResourceBudget struct {
 	SwapBytes        int64
 	PIDs             int64
 	ExecutionTimeout time.Duration
+	StdoutBytes      int
+	StderrBytes      int
 }
 
 func DefaultResourceBudget() ResourceBudget {
-	return ResourceBudget{CPUMillis: 2000, MemoryBytes: 1 << 30, SwapBytes: 0, PIDs: 64, ExecutionTimeout: 60 * time.Second}
+	return ResourceBudget{CPUMillis: 2000, MemoryBytes: 1 << 30, SwapBytes: 0, PIDs: 64, ExecutionTimeout: 60 * time.Second, StdoutBytes: 1 << 20, StderrBytes: 1 << 20}
 }
 
 func (budget ResourceBudget) validate() error {
@@ -40,5 +45,10 @@ func (budget ResourceBudget) validate() error {
 	if budget.ExecutionTimeout <= 0 {
 		return errors.New("Resource Budget Execution timeout must be positive")
 	}
+	if !validOutputBudget(budget.StdoutBytes) || !validOutputBudget(budget.StderrBytes) {
+		return errors.New("Resource Budget stdout and stderr must each be between 1 byte and 8 MiB")
+	}
 	return nil
 }
+
+func validOutputBudget(bytes int) bool { return bytes > 0 && bytes <= maximumOutputBytes }

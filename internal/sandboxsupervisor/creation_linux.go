@@ -124,6 +124,7 @@ type sandboxCreator struct {
 	mu      sync.Mutex
 	active  map[string]*createdSandbox
 	retired map[string]struct{}
+	results executionResultStore
 	wait    sync.WaitGroup
 }
 

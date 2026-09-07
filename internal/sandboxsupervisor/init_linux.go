@@ -16,21 +16,23 @@ import (
 	"unicode/utf8"
 )
 
-const maximumInitOutputBytes = 4096
-
 type initRequest struct {
-	Action string `json:"action"`
-	Source string `json:"source,omitempty"`
-	Stdin  string `json:"stdin,omitempty"`
+	Action      string `json:"action"`
+	Source      string `json:"source,omitempty"`
+	Stdin       string `json:"stdin,omitempty"`
+	StdoutBytes int    `json:"stdout_bytes,omitempty"`
+	StderrBytes int    `json:"stderr_bytes,omitempty"`
 }
 
 type initResponse struct {
-	Phase     string `json:"phase"`
-	PID       int    `json:"pid,omitempty"`
-	ExitCode  int    `json:"exit_code"`
-	Stdout    string `json:"stdout,omitempty"`
-	Stderr    string `json:"stderr,omitempty"`
-	Truncated bool   `json:"truncated,omitempty"`
+	Phase           string `json:"phase"`
+	PID             int    `json:"pid,omitempty"`
+	ExitCode        int    `json:"exit_code"`
+	Stdout          string `json:"stdout,omitempty"`
+	Stderr          string `json:"stderr,omitempty"`
+	Truncated       bool   `json:"truncated,omitempty"`
+	StdoutTruncated bool   `json:"stdout_truncated"`
+	StderrTruncated bool   `json:"stderr_truncated"`
 }
 
 type initMessage struct {
@@ -83,7 +85,8 @@ func RunInit() error {
 			return message.err
 		}
 		request := message.request
-		if request.Action != "start" || request.Source == "" || strings.ContainsRune(request.Source, 0) || len(request.Source) > 32<<10 || len(request.Stdin) > 8<<10 {
+		if request.Action != "start" || request.Source == "" || strings.ContainsRune(request.Source, 0) || len(request.Source) > 32<<10 || len(request.Stdin) > 8<<10 ||
+			!validOutputBudget(request.StdoutBytes) || !validOutputBudget(request.StderrBytes) {
 			return errors.New("invalid Sandbox Init start request")
 		}
 		if err := executeInitWorkload(request, requests, responses, children); err != nil {
@@ -94,10 +97,10 @@ func RunInit() error {
 
 func readInitRequests(control io.Reader, requests chan<- initMessage, stopped <-chan struct{}) {
 	for {
-		payload, err := readFrame(control)
+		payload, err := readFrame(control, maximumControlMessageSize)
 		var request initRequest
 		if err == nil {
-			err = decodeStrictJSON(payload, &request, "action", "source", "stdin")
+			err = decodeStrictJSON(payload, &request, "action", "source", "stdin", "stdout_bytes", "stderr_bytes")
 		}
 		select {
 		case requests <- initMessage{request: request, err: err}:
@@ -115,7 +118,7 @@ func writeInitResponse(responses io.Writer, response initResponse) error {
 	if err != nil {
 		return err
 	}
-	return writeFrame(responses, payload)
+	return writeFrame(responses, payload, maximumResultMessageSize)
 }
 
 func requireInitAction(requests <-chan initMessage, action string) error {
@@ -123,7 +126,7 @@ func requireInitAction(requests <-chan initMessage, action string) error {
 	if message.err != nil {
 		return message.err
 	}
-	if message.request.Action != action || message.request.Source != "" || message.request.Stdin != "" {
+	if message.request.Action != action || message.request.Source != "" || message.request.Stdin != "" || message.request.StdoutBytes != 0 || message.request.StderrBytes != 0 {
 		return fmt.Errorf("Sandbox Init expected %s", action)
 	}
 	return nil
@@ -177,8 +180,8 @@ func executeInitWorkload(request initRequest, requests <-chan initMessage, respo
 	_ = stdoutWriter.Close()
 	_ = stderrWriter.Close()
 	_ = gateReader.Close()
-	stdout := captureInitOutput(stdoutReader)
-	stderr := captureInitOutput(stderrReader)
+	stdout := captureInitOutput(stdoutReader, request.StdoutBytes)
+	stderr := captureInitOutput(stderrReader, request.StderrBytes)
 	go func() {
 		_, _ = io.WriteString(stdinWriter, request.Stdin)
 		_ = stdinWriter.Close()
@@ -221,7 +224,8 @@ func executeInitWorkload(request initRequest, requests <-chan initMessage, respo
 	}
 	return writeInitResponse(responses, initResponse{
 		Phase: "ready", ExitCode: exitCode, Stdout: output.text, Stderr: errorOutput.text,
-		Truncated: output.truncated || errorOutput.truncated,
+		Truncated:       output.truncated || errorOutput.truncated,
+		StdoutTruncated: output.truncated, StderrTruncated: errorOutput.truncated,
 	})
 }
 
@@ -276,18 +280,20 @@ type initOutput struct {
 	err       error
 }
 
-func captureInitOutput(reader io.Reader) <-chan initOutput {
+func captureInitOutput(reader io.Reader, budget int) <-chan initOutput {
 	result := make(chan initOutput, 1)
 	go func() {
-		retained := make([]byte, 0, maximumInitOutputBytes)
+		retained := make([]byte, 0, budget)
 		var buffer [8192]byte
 		output := initOutput{}
 		for {
 			n, err := reader.Read(buffer[:])
-			remaining := maximumInitOutputBytes - len(retained)
+			remaining := budget - len(retained)
 			if n > remaining {
 				output.truncated = true
 			}
+			// Keep draining after the retained prefix is full. Stopping here
+			// would block a Workload on a full pipe instead of bounding capture.
 			retained = append(retained, buffer[:min(n, remaining)]...)
 			if err != nil {
 				if err != io.EOF {
@@ -297,11 +303,14 @@ func captureInitOutput(reader io.Reader) <-chan initOutput {
 			}
 		}
 		output.text = strings.ToValidUTF8(string(retained), "\uFFFD")
-		if len(output.text) > maximumInitOutputBytes {
-			output.text = output.text[:maximumInitOutputBytes]
+		if len(output.text) > budget {
+			output.text = output.text[:budget]
 			for !utf8.ValidString(output.text) {
 				output.text = output.text[:len(output.text)-1]
 			}
+			// A substring would retain the entire expanded allocation in the
+			// result store, despite its shorter visible byte length.
+			output.text = strings.Clone(output.text)
 			output.truncated = true
 		}
 		result <- output

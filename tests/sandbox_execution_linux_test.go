@@ -202,9 +202,9 @@ sys.exit(7)`)
 		t.Fatalf("missing failure status: %+v", failed)
 	}
 	flood := executeSandboxPython(t, fixture, "run-failure", "flood", `import os
-os.write(1, b'x' * 100000)
-os.write(2, b'y' * 100000)`)
-	if flood.ExitCode != 0 || len(flood.Stdout) != 4096 || len(flood.Stderr) != 4096 || !flood.Truncated {
+os.write(1, b'x' * (2 * 1024 * 1024))
+os.write(2, b'y' * (2 * 1024 * 1024))`)
+	if flood.ExitCode != 0 || len(flood.Stdout) != 1<<20 || len(flood.Stderr) != 1<<20 || !flood.Truncated {
 		t.Fatalf("unbounded or incomplete output: %+v", flood)
 	}
 	clean := executeSandboxPython(t, fixture, "run-failure", "after-failure", "print('still-usable')")
@@ -237,13 +237,15 @@ func TestSandboxExecutionRejectsNulBeforeDisturbingWorkspace(t *testing.T) {
 }
 
 type sandboxExecutionResult struct {
-	ExecutionID    string `json:"execution_id"`
-	ExitCode       int    `json:"exit_code"`
-	Stdout         string `json:"stdout"`
-	Stderr         string `json:"stderr"`
-	Truncated      bool   `json:"truncated"`
-	TerminalReason string `json:"terminal_reason"`
-	ResourceUsage  struct {
+	ExecutionID     string `json:"execution_id"`
+	ExitCode        int    `json:"exit_code"`
+	Stdout          string `json:"stdout"`
+	Stderr          string `json:"stderr"`
+	Truncated       bool   `json:"truncated"`
+	StdoutTruncated bool   `json:"stdout_truncated"`
+	StderrTruncated bool   `json:"stderr_truncated"`
+	TerminalReason  string `json:"terminal_reason"`
+	ResourceUsage   struct {
 		OOMEvents           uint64 `json:"oom_events"`
 		PIDLimitEvents      uint64 `json:"pid_limit_events"`
 		CPUUsec             uint64 `json:"cpu_usec"`

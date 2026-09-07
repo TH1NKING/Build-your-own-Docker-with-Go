@@ -135,7 +135,7 @@ func (service *server) handle(connection *net.UnixConn) {
 	defer connection.Close()
 	_ = connection.SetDeadline(time.Now().Add(5 * time.Second))
 
-	payload, err := readFrame(connection)
+	payload, err := readFrame(connection, maximumControlMessageSize)
 	if err != nil {
 		if errors.Is(err, errControlMessageTooLarge) {
 			service.writeProtocolError(connection, "", ErrorCodeRequestTooLarge)
@@ -178,6 +178,8 @@ func (service *server) responseForRequest(operation *controlOperation, request r
 		return service.executePythonResponse(operation, request.RequestID, request.Parameters)
 	case OperationDestroySandbox:
 		return service.destroySandboxResponse(request.RequestID, request.Parameters)
+	case OperationGetExecutionResult:
+		return service.getExecutionResultResponse(request.RequestID, request.Parameters)
 	default:
 		return protocolErrorResponse(request.RequestID, ErrorCodeUnknownOperation)
 	}
@@ -238,7 +240,7 @@ func (service *server) writeResponse(connection *net.UnixConn, response response
 	if err != nil {
 		return err
 	}
-	return writeFrame(connection, payload)
+	return writeFrame(connection, payload, maximumResultMessageSize)
 }
 
 func (service *server) writeProtocolError(connection *net.UnixConn, requestID string, code ErrorCode) {

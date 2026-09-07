@@ -68,7 +68,9 @@ T08 在 Python 启动前清空 Workload 的 capability 集合、设置不可撤�
 
 T09 使用持续存在的 Sandbox cgroup v2 父组执行 CPU、内存、swap 和 PID 资源预算，Init 与每次 Execution 使用独立子组。默认预算为 2 CPU、1 GiB 内存、禁用 swap、64 个内核任务，均由可信启动配置决定。内核 CPU 节流与内存/PID 超限分别报告；跨 Execution 留存的 Workspace 内存继续计入父预算。运行验收需要已委派 `cpu memory pids` 控制器的 cgroup v2 父目录，可通过 `SANDBOX_TEST_CGROUP_PARENT` 指定。原理、方案比较与代码阅读路线见 [`T09 学习笔记`](docs/learning/t09-resource-budgets.md)。
 
-T12 增加每次 Execution 的可信执行期限，默认 60 秒，可通过 `sandboxd --execution-timeout` 配置。超时后终止该次执行的全部后代，等待 Init 回收并移除 Execution cgroup，再返回 `timed_out`；清理成功时同一 Init 和 Workspace 可供后续执行复用。客户端取消和显式销毁仍终止整个 Sandbox。实现原理、替代方案、竞态与验证方法见 [`T12 学习笔记`](docs/learning/t12-execution-deadlines.md)。T07、T10–T11 的后续安全及资源合同仍需完成，当前不能据此用于任意不可信 Workload。
+T12 增加每次 Execution 的可信执行期限，默认 60 秒，可通过 `sandboxd --execution-timeout` 配置。超时后终止该次执行的全部后代，等待 Init 回收并移除 Execution cgroup，再返回 `timed_out`；清理成功时同一 Init 和 Workspace 可供后续执行复用。客户端取消和显式销毁仍终止整个 Sandbox。实现原理、替代方案、竞态与验证方法见 [`T12 学习笔记`](docs/learning/t12-execution-deadlines.md)。
+
+T11 将 stdout、stderr 的默认捕获额度分别设为 1 MiB，支持可信启动配置、独立截断标记与有界结果快照。超出额度的输出继续被读取并丢弃；`GetExecutionResult` 重复读取已经完成的结果，不重新执行代码。结果暂存有条目数和总预留字节上限，显式销毁 Sandbox 时释放，Supervisor 重启后不保留。协议传输、并发管道、生命周期和替代方案见 [`T11 学习笔记`](docs/learning/t11-bounded-execution-results.md)。T07、T10 的后续安全及资源合同仍需完成，当前不能据此用于任意不可信 Workload。
 
 ## 使用 Go Runtime Lab
 

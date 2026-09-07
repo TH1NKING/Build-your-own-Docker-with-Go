@@ -635,8 +635,8 @@ func exchangeSandboxSupervisorDeclaredFrame(
 		t.Fatal("read Sandbox Supervisor response length:", err)
 	}
 	responseLength := binary.BigEndian.Uint32(header[:])
-	if responseLength == 0 || responseLength > 64<<10 {
-		t.Fatalf("Sandbox Supervisor response length = %d, want 1..65536", responseLength)
+	if responseLength == 0 || responseLength > (96<<20)+(64<<10) {
+		t.Fatalf("Sandbox Supervisor response length = %d, exceeds the bounded result frame", responseLength)
 	}
 	responsePayload := make([]byte, responseLength)
 	if _, err := io.ReadFull(connection, responsePayload); err != nil {
