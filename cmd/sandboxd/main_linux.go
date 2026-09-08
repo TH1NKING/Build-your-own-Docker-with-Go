@@ -22,8 +22,8 @@ func main() {
 }
 
 func run(arguments []string) error {
-	if len(arguments) == 1 && arguments[0] == "--sandbox-bootstrap" {
-		return sandboxsupervisor.RunBootstrap()
+	if len(arguments) == 2 && arguments[0] == "--sandbox-bootstrap" {
+		return sandboxsupervisor.RunBootstrap(arguments[1])
 	}
 	flags := flag.NewFlagSet("sandboxd", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
@@ -41,6 +41,10 @@ func run(arguments []string) error {
 	flags.DurationVar(&config.ResourceBudget.ExecutionTimeout, "execution-timeout", config.ResourceBudget.ExecutionTimeout, "wall-clock budget per Execution, independent of the Worker connection")
 	flags.IntVar(&config.ResourceBudget.StdoutBytes, "stdout-bytes", config.ResourceBudget.StdoutBytes, "captured stdout bytes per Execution (1..8388608)")
 	flags.IntVar(&config.ResourceBudget.StderrBytes, "stderr-bytes", config.ResourceBudget.StderrBytes, "captured stderr bytes per Execution (1..8388608)")
+	flags.Int64Var(&config.ResourceBudget.Storage.WorkspaceBytes, "workspace-bytes", config.ResourceBudget.Storage.WorkspaceBytes, "Sandbox Workspace allocated bytes, in whole memory pages")
+	flags.Int64Var(&config.ResourceBudget.Storage.WorkspaceFiles, "workspace-files", config.ResourceBudget.Storage.WorkspaceFiles, "Sandbox Workspace file slots, including directories and links")
+	flags.Int64Var(&config.ResourceBudget.Storage.TemporaryBytes, "temporary-bytes", config.ResourceBudget.Storage.TemporaryBytes, "Sandbox temporary allocated bytes, in whole memory pages")
+	flags.Int64Var(&config.ResourceBudget.Storage.TemporaryFiles, "temporary-files", config.ResourceBudget.Storage.TemporaryFiles, "Sandbox temporary file slots, including directories and links")
 	flags.UintVar(&config.SubUIDStart, "subuid-start", 0, "first operator-reserved subordinate host UID")
 	flags.UintVar(&config.SubGIDStart, "subgid-start", 0, "first operator-reserved subordinate host GID")
 	flags.UintVar(&config.SubIDCount, "subid-count", 0, "reserved IDs per UID/GID range, in blocks of 65536; zero disables creation")

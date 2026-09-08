@@ -75,7 +75,9 @@ T09 使用持续存在的 Sandbox cgroup v2 父组执行 CPU、内存、swap 和
 
 T12 增加每次 Execution 的可信执行期限，默认 60 秒，可通过 `sandboxd --execution-timeout` 配置。超时后终止该次执行的全部后代，等待 Init 回收并移除 Execution cgroup，再返回 `timed_out`；清理成功时同一 Init 和 Workspace 可供后续执行复用。客户端取消和显式销毁仍终止整个 Sandbox。实现原理、替代方案、竞态与验证方法见 [`T12 学习笔记`](docs/learning/t12-execution-deadlines.md)。
 
-T11 将 stdout、stderr 的默认捕获额度分别设为 1 MiB，支持可信启动配置、独立截断标记与有界结果快照。超出额度的输出继续被读取并丢弃；`GetExecutionResult` 重复读取已经完成的结果，不重新执行代码。结果暂存有条目数和总预留字节上限，显式销毁 Sandbox 时释放，Supervisor 重启后不保留。协议传输、并发管道、生命周期和替代方案见 [`T11 学习笔记`](docs/learning/t11-bounded-execution-results.md)。T07、T10 的后续安全及资源合同仍需完成，当前不能据此用于任意不可信 Workload。
+T11 将 stdout、stderr 的默认捕获额度分别设为 1 MiB，支持可信启动配置、独立截断标记与有界结果快照。超出额度的输出继续被读取并丢弃；`GetExecutionResult` 重复读取已经完成的结果，不重新执行代码。结果暂存有条目数和总预留字节上限，显式销毁 Sandbox 时释放，Supervisor 重启后不保留。协议传输、并发管道、生命周期和替代方案见 [`T11 学习笔记`](docs/learning/t11-bounded-execution-results.md)。
+
+T10 将 Workspace 与 `/tmp` 的存储预算纳入可信启动配置：默认分别为 512 MiB / 5,000 个文件名额和 16 MiB / 1,023 个文件名额。独立 tmpfs 在执行中拒绝超额分配，目录、链接和仍打开的已删除文件继续占用相应额度；状态和占用跨 Execution 保留，释放后可复用。字节预算计算实际分配的数据页，稀疏文件的逻辑长度及输出提取仍需单独限制。配置、内核计费、与 cgroup OOM 的区别、方案取舍及实验见 [`T10 学习笔记`](docs/learning/t10-storage-budgets.md)。T07 等后续安全合同仍需完成，当前不能据此用于任意不可信 Workload。
 
 ## 使用 Go Runtime Lab
 

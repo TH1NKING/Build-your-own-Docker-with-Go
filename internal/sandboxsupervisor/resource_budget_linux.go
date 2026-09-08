@@ -22,10 +22,15 @@ type ResourceBudget struct {
 	ExecutionTimeout time.Duration
 	StdoutBytes      int
 	StderrBytes      int
+	Storage          StorageBudget
 }
 
 func DefaultResourceBudget() ResourceBudget {
-	return ResourceBudget{CPUMillis: 2000, MemoryBytes: 1 << 30, SwapBytes: 0, PIDs: 64, ExecutionTimeout: 60 * time.Second, StdoutBytes: 1 << 20, StderrBytes: 1 << 20}
+	return ResourceBudget{
+		CPUMillis: 2000, MemoryBytes: 1 << 30, SwapBytes: 0, PIDs: 64,
+		ExecutionTimeout: 60 * time.Second, StdoutBytes: 1 << 20, StderrBytes: 1 << 20,
+		Storage: StorageBudget{WorkspaceBytes: 512 << 20, WorkspaceFiles: 5000, TemporaryBytes: 16 << 20, TemporaryFiles: 1023},
+	}
 }
 
 func (budget ResourceBudget) validate() error {
@@ -48,7 +53,7 @@ func (budget ResourceBudget) validate() error {
 	if !validOutputBudget(budget.StdoutBytes) || !validOutputBudget(budget.StderrBytes) {
 		return errors.New("Resource Budget stdout and stderr must each be between 1 byte and 8 MiB")
 	}
-	return nil
+	return budget.Storage.validate()
 }
 
 func validOutputBudget(bytes int) bool { return bytes > 0 && bytes <= maximumOutputBytes }
