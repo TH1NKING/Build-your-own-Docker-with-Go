@@ -11,12 +11,19 @@ import (
 )
 
 // RunBootstrap is the private re-exec entry point of sandboxd. It accepts no
-// paths or commands: the Supervisor supplies only already-open handles.
-func RunBootstrap() error {
+// paths or commands: the Supervisor supplies already-open handles and storage policy.
+func RunBootstrap(storagePolicy string) error {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	if os.Getpid() != 1 || os.Geteuid() != 0 {
 		return errors.New("Sandbox bootstrap requires namespace PID 1 and internal UID zero")
+	}
+	var storage StorageBudget
+	if err := decodeStrictJSON([]byte(storagePolicy), &storage, "workspace_bytes", "workspace_files", "temporary_bytes", "temporary_files"); err != nil {
+		return fmt.Errorf("decode Sandbox storage policy: %w", err)
+	}
+	if err := storage.validate(); err != nil {
+		return err
 	}
 	ready := os.NewFile(3, "bootstrap-ready")
 	control := os.NewFile(4, "init-requests")
@@ -96,8 +103,15 @@ func RunBootstrap() error {
 	}
 	// These empty mountpoints are reserved and materialized by the installer.
 	// Their contents exist only in this Sandbox's private mount namespace.
-	if err := syscall.Mount("tmpfs", "/workspace", "tmpfs", syscall.MS_NOSUID|syscall.MS_NODEV|syscall.MS_NOEXEC, "size=512m,nr_inodes=5002,mode=0755"); err != nil {
+	// Root, input and output consume three trusted inodes. Everything created
+	// by a Workload, including directories and links, uses the remaining slots.
+	if err := syscall.Mount("tmpfs", "/workspace", "tmpfs", syscall.MS_NOSUID|syscall.MS_NODEV|syscall.MS_NOEXEC, fmt.Sprintf("size=%d,nr_inodes=%d,mode=0755", storage.WorkspaceBytes, storage.WorkspaceFiles+3)); err != nil {
 		return fmt.Errorf("mount Sandbox Workspace: %w", err)
+	}
+	// Reserve an immutable input slot. Authorized Attachment mounts are added
+	// by their own feature; Workloads cannot write, replace or chmod this slot.
+	if err := os.Mkdir("/workspace/input", 0o555); err != nil {
+		return err
 	}
 	if err := os.Mkdir("/workspace/output", 0o700); err != nil {
 		return err
@@ -105,7 +119,7 @@ func RunBootstrap() error {
 	if err := os.Chown("/workspace/output", 1000, 1000); err != nil {
 		return err
 	}
-	if err := syscall.Mount("tmpfs", "/tmp", "tmpfs", syscall.MS_NOSUID|syscall.MS_NODEV|syscall.MS_NOEXEC, "size=16m,nr_inodes=1024,mode=0700,uid=1000,gid=1000"); err != nil {
+	if err := syscall.Mount("tmpfs", "/tmp", "tmpfs", syscall.MS_NOSUID|syscall.MS_NODEV|syscall.MS_NOEXEC, fmt.Sprintf("size=%d,nr_inodes=%d,mode=0700,uid=1000,gid=1000", storage.TemporaryBytes, storage.TemporaryFiles+1)); err != nil {
 		return fmt.Errorf("mount Sandbox temporary storage: %w", err)
 	}
 	// exec preserves namespace PID 1 while replacing the bootstrap with the

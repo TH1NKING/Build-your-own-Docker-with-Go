@@ -4,6 +4,7 @@ package sandboxsupervisor
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -286,7 +287,11 @@ func (creator *sandboxCreator) create(operation *controlOperation, id string, pr
 
 	// Namespace construction happens before exec, so no goroutine in the
 	// network-facing Supervisor ever changes its own namespaces or root.
-	command := exec.CommandContext(sandbox.ctx, "/proc/self/exe", "--sandbox-bootstrap")
+	storagePolicy, err := json.Marshal(creator.config.ResourceBudget.Storage)
+	if err != nil {
+		return ErrorCodeCreationFailed
+	}
+	command := exec.CommandContext(sandbox.ctx, "/proc/self/exe", "--sandbox-bootstrap", string(storagePolicy))
 	// Go's container-aware GOMAXPROCS otherwise keeps host cgroup files open
 	// across pivot_root. These trusted bootstrap settings close those handles
 	// at runtime startup, before readiness. This is not a Workload CPU budget.

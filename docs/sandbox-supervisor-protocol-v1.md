@@ -11,6 +11,8 @@ T05 adds a verified Sandbox Init and sequential `execute_python` requests.
 T06 adds explicit `destroy_sandbox`, request abandonment cleanup, and terminal
 identifier protection within one Supervisor lifetime.
 T11 adds independently bounded output and `get_execution_result` snapshots.
+T10 makes Workspace and temporary-storage budgets configurable and enforces
+them through per-Sandbox tmpfs mounts before any Workload starts.
 The default protocol-only mode still returns `operation_unavailable` for a
 valid `create_sandbox` request whose Profile exists.
 
@@ -78,6 +80,10 @@ Trusted Resource Budget flags (defaults shown) are:
 --execution-timeout 1m
 --stdout-bytes 1048576
 --stderr-bytes 1048576
+--workspace-bytes 536870912
+--workspace-files 5000
+--temporary-bytes 16777216
+--temporary-files 1023
 ```
 
 CPU uses a fixed 100,000-microsecond period; 2000 millicores produces
@@ -98,6 +104,39 @@ Budgets include Init and Workload tasks (including threads), and surviving
 Workspace tmpfs charges remain under the same parent across Executions.
 Very small valid policies may be insufficient to start or keep Init alive;
 there is no promised minimum usable Python memory or task count.
+
+Storage byte budgets must be positive whole memory pages. File-slot budgets
+must be between 1 and `floor((2^63 - 1) / 1024) - 3`, leaving room for trusted
+directories and kernel inode accounting. Zero never means unlimited policy.
+The Supervisor passes a typed storage record only to its private bootstrap;
+bootstrap strictly decodes and validates it before mounting. Neither public
+creation nor Execution requests accept storage overrides.
+
+`/workspace` and `/tmp` are independent, per-Sandbox tmpfs instances. The
+Workspace default allows 512 MiB of allocated file data and 5,000 Workload
+file slots; `/tmp` allows 16 MiB and 1,023 slots. The temporary default preserves
+the prior effective capacity of `nr_inodes=1024`, including its root inode.
+Files remain charged across sequential Executions until their resources are
+released, and both mounts disappear with their Sandbox. The budgets bound
+retained allocations, not cumulative lifetime writes or the sum of logical
+file lengths. Sparse files can have larger logical lengths; output extraction
+must enforce its own logical-size and transfer bounds.
+
+File slots include directories, symlinks and extra hard links. Open unlinked
+files remain charged until their last reference is released. Three trusted
+Workspace inodes (root, `input`, `output`) and the one `/tmp` root inode are
+reserved separately. Only `/workspace/output` is Workload-owned within the
+Workspace. The root-owned `0555` input directory is currently an empty,
+non-writable reservation; T13 supplies actual read-only Attachment mounts.
+
+The kernel refuses allocations at the byte or inode boundary, including writes
+from concurrent descendants. Ordinary writes may short-write and then fail
+with `ENOSPC`; shared mappings may receive `SIGBUS` on a fault that cannot
+allocate storage. A Workload may catch a refusal, release files and continue.
+T10 preserves ordinary exit/signal results and does not infer a storage terminal
+reason from stderr or a final directory scan. Both filesystems also consume
+Sandbox memory, so the cgroup memory budget can cause OOM before storage fills.
+These limits do not reserve physical memory or replace T09's memory policy.
 
 The Platform Operator must reserve these ranges against system accounts,
 other Supervisor instances, and other subordinate-ID users before startup.
@@ -446,9 +485,10 @@ the Policy. The bootstrap mounts local
 proc, a private Workspace tmpfs and a private temporary tmpfs, then `exec`s
 `/sandbox-init`, preserving PID 1. Init itself signals readiness. The Profile
 root stays read-only; only `/workspace/output` and `/tmp` are writable by UID
-1000. Workspace (512 MiB, 5002 inodes including scaffolding) and temporary
-storage (16 MiB, 1024 inodes) have conservative fixed caps in this slice;
-configurable policy, exact accounting and Resource Budget outcomes remain T10.
+1000. T10 configures Workspace (default 512 MiB, 5003 inodes including trusted
+directories) and temporary storage (default 16 MiB, 1024 inodes) through the
+trusted storage policy described above. The input directory is root-owned;
+T13 will bind authorized Attachments there read-only.
 
 The Supervisor starts the child from an already-open Profile directory on a
 locked OS thread with an unshared `CLONE_FS` context. The inherited current
@@ -517,7 +557,7 @@ but no crash-recovery contract. Cgroup cleanup failures retain owned handles
 and the Sandbox identity reservation for a later `destroy_sandbox` retry;
 successful destruction waits for removal of the Execution, Init, and budget
 groups. T11's bounded local result snapshots add no crash recovery. Complete
-mount and storage enforcement remain T07 and T10. This is not the complete
+mount hardening remains T07. This is not the complete
 production security boundary.
 
 ## Verification
