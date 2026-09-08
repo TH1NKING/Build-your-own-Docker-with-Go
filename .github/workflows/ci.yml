@@ -8,6 +8,36 @@ permissions:
   contents: read
 
 jobs:
+  postgres-migrations:
+    name: PostgreSQL migrations
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: migration-test-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      AGENT_TEST_DATABASE_URL: postgres://postgres:migration-test-password@127.0.0.1:5432/postgres?sslmode=disable
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Verify migrations through agentctl against real PostgreSQL
+        run: make test-migrations
+
   runtime-lab:
     name: Runtime Lab
     runs-on: ubuntu-latest

@@ -13,6 +13,7 @@
 - `tests`：面向公开命令入口的 Linux 验收测试。
 - `cmd/profile-bundle`：构建和 root-owned 安装 `python-data-v1` Profile Bundle 的公开工具。
 - `cmd/sandboxd`：Linux 上的特权 Sandbox Supervisor 入口；仅开放受限本地协议，不接受通用宿主机命令或路径。
+- `cmd/agentctl`：Control Plane 运维入口，当前提供 PostgreSQL 版本化迁移和只读版本检查。
 - `profiles/python-data-v1`：锁定的 Runtime Profile 输入与候选 System Call Policy。
 - `docs/adr` 与 `CONTEXT.md`：目标系统的架构决策和上下文文档。
 - [`CONTRIBUTORS.md`](CONTRIBUTORS.md)：项目贡献者与协作者署名。
@@ -47,6 +48,10 @@ bash -n with_shell/*.sh
 ```
 
 GitHub Actions 会在 Ubuntu 上对 push 和 pull request 执行同一个 `make check`，因此本地与 CI 使用相同的验收入口。
+
+T17 增加 `agentctl migrate`：在 PostgreSQL 17 上逐文件事务化应用迁移，将 SQL 变更与版本记录一起提交；重复执行报告当前版本，并校验已应用文件的名称与 SHA-256。并发命令通过数据库 advisory lock 串行执行，超时主动取消 SQL，失败后保留已提交版本。第一份迁移只建立 `control_plane` schema，业务表由后续 ticket 引入。命令、环境配置和新增迁移流程见 [`迁移合同`](docs/agentctl-migrations.md)，原理与实验见 [`T17 学习笔记`](docs/learning/t17-postgresql-migrations.md)。
+
+设置指向专用测试 PostgreSQL 的 `AGENT_TEST_DATABASE_URL` 后，运行 `make test-migrations` 执行真实 CLI 验收；该入口缺少配置时会失败。普通 `go test ./...` 未配置数据库时会明确跳过数据库用例。CI 有独立 PostgreSQL 17 service job，覆盖初始化、重复运行、只读状态、中途回滚、历史校验、并发和超时恢复。
 
 Profile Bundle 另有一个 Linux root 验收 job：它校验锁定下载、两次可复现构建、root-owned 原子安装、恶意 Bundle 拒绝以及真实 CPython 内容 smoke。格式和命令合同见 [`docs/profile-bundle-v1.md`](docs/profile-bundle-v1.md)。
 
