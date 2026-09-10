@@ -143,6 +143,7 @@ type createdSandbox struct {
 	terminating    bool            // guarded by creator.mu
 	cleanupErr     error           // guarded by creator.mu; retryable after done closes
 	cgroups        *sandboxCgroups // owned by creation, then guarded by execution
+	extractedBytes int64           // successful snapshots, guarded by execution
 }
 
 func newSandboxCreator(ctx context.Context, config ServerConfig, root *os.Root) *sandboxCreator {

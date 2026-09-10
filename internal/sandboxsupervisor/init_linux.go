@@ -17,22 +17,27 @@ import (
 )
 
 type initRequest struct {
-	Action      string `json:"action"`
-	Source      string `json:"source,omitempty"`
-	Stdin       string `json:"stdin,omitempty"`
-	StdoutBytes int    `json:"stdout_bytes,omitempty"`
-	StderrBytes int    `json:"stderr_bytes,omitempty"`
+	Action           string   `json:"action"`
+	Source           string   `json:"source,omitempty"`
+	Stdin            string   `json:"stdin,omitempty"`
+	StdoutBytes      int      `json:"stdout_bytes,omitempty"`
+	StderrBytes      int      `json:"stderr_bytes,omitempty"`
+	OutputPaths      []string `json:"output_paths,omitempty"`
+	OutputFileBytes  int64    `json:"output_file_bytes,omitempty"`
+	OutputTotalBytes int64    `json:"output_total_bytes,omitempty"`
 }
 
 type initResponse struct {
-	Phase           string `json:"phase"`
-	PID             int    `json:"pid,omitempty"`
-	ExitCode        int    `json:"exit_code"`
-	Stdout          string `json:"stdout,omitempty"`
-	Stderr          string `json:"stderr,omitempty"`
-	Truncated       bool   `json:"truncated,omitempty"`
-	StdoutTruncated bool   `json:"stdout_truncated"`
-	StderrTruncated bool   `json:"stderr_truncated"`
+	Phase           string                `json:"phase"`
+	PID             int                   `json:"pid,omitempty"`
+	ExitCode        int                   `json:"exit_code"`
+	Stdout          string                `json:"stdout,omitempty"`
+	Stderr          string                `json:"stderr,omitempty"`
+	Truncated       bool                  `json:"truncated,omitempty"`
+	StdoutTruncated bool                  `json:"stdout_truncated"`
+	StderrTruncated bool                  `json:"stderr_truncated"`
+	Outputs         []ExtractedOutput     `json:"outputs,omitempty"`
+	OutputError     OutputExtractionError `json:"output_error,omitempty"`
 }
 
 type initMessage struct {
@@ -86,7 +91,8 @@ func RunInit() error {
 		}
 		request := message.request
 		if request.Action != "start" || request.Source == "" || strings.ContainsRune(request.Source, 0) || len(request.Source) > 32<<10 || len(request.Stdin) > 8<<10 ||
-			!validOutputBudget(request.StdoutBytes) || !validOutputBudget(request.StderrBytes) {
+			!validOutputBudget(request.StdoutBytes) || !validOutputBudget(request.StderrBytes) || !validOutputPaths(request.OutputPaths) ||
+			request.OutputFileBytes <= 0 || request.OutputFileBytes > maximumExtractionBytes || request.OutputTotalBytes < 0 || request.OutputTotalBytes > maximumExtractionBytes {
 			return errors.New("invalid Sandbox Init start request")
 		}
 		if err := executeInitWorkload(request, requests, responses, children); err != nil {
@@ -100,7 +106,7 @@ func readInitRequests(control io.Reader, requests chan<- initMessage, stopped <-
 		payload, err := readFrame(control, maximumControlMessageSize)
 		var request initRequest
 		if err == nil {
-			err = decodeStrictJSON(payload, &request, "action", "source", "stdin", "stdout_bytes", "stderr_bytes")
+			err = decodeStrictJSON(payload, &request, "action", "source", "stdin", "stdout_bytes", "stderr_bytes", "output_paths", "output_file_bytes", "output_total_bytes")
 		}
 		select {
 		case requests <- initMessage{request: request, err: err}:
@@ -126,7 +132,7 @@ func requireInitAction(requests <-chan initMessage, action string) error {
 	if message.err != nil {
 		return message.err
 	}
-	if message.request.Action != action || message.request.Source != "" || message.request.Stdin != "" || message.request.StdoutBytes != 0 || message.request.StderrBytes != 0 {
+	if message.request.Action != action || message.request.Source != "" || message.request.Stdin != "" || message.request.StdoutBytes != 0 || message.request.StderrBytes != 0 || len(message.request.OutputPaths) != 0 || message.request.OutputFileBytes != 0 || message.request.OutputTotalBytes != 0 {
 		return fmt.Errorf("Sandbox Init expected %s", action)
 	}
 	return nil
@@ -222,10 +228,14 @@ func executeInitWorkload(request initRequest, requests <-chan initMessage, respo
 	if err != nil {
 		return err
 	}
+	// No Workload descendants remain and the Supervisor still holds the
+	// Execution lock. Trusted Init reads inside its own isolated root.
+	outputs, outputError := extractDeclaredOutputs(request.OutputPaths, request.OutputFileBytes, request.OutputTotalBytes)
 	return writeInitResponse(responses, initResponse{
 		Phase: "ready", ExitCode: exitCode, Stdout: output.text, Stderr: errorOutput.text,
 		Truncated:       output.truncated || errorOutput.truncated,
 		StdoutTruncated: output.truncated, StderrTruncated: errorOutput.truncated,
+		Outputs: outputs, OutputError: outputError,
 	})
 }
 

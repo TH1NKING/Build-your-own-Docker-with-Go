@@ -46,8 +46,9 @@ type responseEnvelope struct {
 }
 
 type server struct {
-	profileStore *os.Root
-	creator      *sandboxCreator
+	profileStore  *os.Root
+	creator       *sandboxCreator
+	responseSlots chan struct{}
 }
 
 const maximumConcurrentControlConnections = 16
@@ -100,7 +101,7 @@ func Serve(ctx context.Context, config ServerConfig) error {
 		}
 	}()
 
-	service := &server{profileStore: profileStore, creator: creator}
+	service := &server{profileStore: profileStore, creator: creator, responseSlots: make(chan struct{}, 2)}
 	connectionSlots := make(chan struct{}, maximumConcurrentControlConnections)
 	var handlers sync.WaitGroup
 	defer func() {
@@ -236,6 +237,17 @@ func (service *server) createSandboxResponse(operation *controlOperation, reques
 }
 
 func (service *server) writeResponse(connection *net.UnixConn, response responseEnvelope) error {
+	// Retained raw bytes are globally reserved; encoded copies also need a
+	// bound when several clients reread one large snapshot concurrently.
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	select {
+	case service.responseSlots <- struct{}{}:
+		defer func() { <-service.responseSlots }()
+	case <-timer.C:
+		return errors.New("Sandbox response encoding capacity is busy")
+	}
+	_ = connection.SetWriteDeadline(time.Now().Add(5 * time.Second))
 	payload, err := json.Marshal(response)
 	if err != nil {
 		return err

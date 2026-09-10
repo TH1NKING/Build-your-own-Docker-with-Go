@@ -77,7 +77,9 @@ T12 增加每次 Execution 的可信执行期限，默认 60 秒，可通过 `sa
 
 T11 将 stdout、stderr 的默认捕获额度分别设为 1 MiB，支持可信启动配置、独立截断标记与有界结果快照。超出额度的输出继续被读取并丢弃；`GetExecutionResult` 重复读取已经完成的结果，不重新执行代码。结果暂存有条目数和总预留字节上限，显式销毁 Sandbox 时释放，Supervisor 重启后不保留。协议传输、并发管道、生命周期和替代方案见 [`T11 学习笔记`](docs/learning/t11-bounded-execution-results.md)。
 
-T10 将 Workspace 与 `/tmp` 的存储预算纳入可信启动配置：默认分别为 512 MiB / 5,000 个文件名额和 16 MiB / 1,023 个文件名额。独立 tmpfs 在执行中拒绝超额分配，目录、链接和仍打开的已删除文件继续占用相应额度；状态和占用跨 Execution 保留，释放后可复用。字节预算计算实际分配的数据页，稀疏文件的逻辑长度及输出提取仍需单独限制。配置、内核计费、与 cgroup OOM 的区别、方案取舍及实验见 [`T10 学习笔记`](docs/learning/t10-storage-budgets.md)。T07 等后续安全合同仍需完成，当前不能据此用于任意不可信 Workload。
+T10 将 Workspace 与 `/tmp` 的存储预算纳入可信启动配置：默认分别为 512 MiB / 5,000 个文件名额和 16 MiB / 1,023 个文件名额。独立 tmpfs 在执行中拒绝超额分配，目录、链接和仍打开的已删除文件继续占用相应额度；状态和占用跨 Execution 保留，释放后可复用。字节预算计算实际分配的数据页，T14 另行限制输出提取的逻辑长度。配置、内核计费、与 cgroup OOM 的区别、方案取舍及实验见 [`T10 学习笔记`](docs/learning/t10-storage-budgets.md)。
+
+T14 为 `execute_python` 增加 `output_paths`：只提取显式声明、位于 `/workspace/output` 内的稳定普通文件。提取在后代终止并回收后进行，通过目录描述符逐段解析，拒绝路径穿越、符号链接、硬链接、特殊文件、跨文件系统访问和已观察到的替换或内容变化；任一文件不合格时整批不返回。默认限制单文件 20 MiB、每次 Execution 32 MiB、每个 Sandbox 累计 100 MiB，以及每次 16 个声明文件。结果包含字节快照、大小与 SHA-256，未声明文件继续留在 Workspace；重复读取已完成结果不重新执行或读文件。接口、预算与暂存生命周期见 [`Supervisor 协议`](docs/sandbox-supervisor-protocol-v1.md)，实现取舍和验证记录见 [`T14 学习笔记`](docs/learning/t14-declared-output-extraction.md)。当前没有 Artifact Store、OSS 上传或文件下载界面，T07、T13、T15 等合同仍未完成，不能据此用于任意不可信 Workload。
 
 ## 使用 Go Runtime Lab
 

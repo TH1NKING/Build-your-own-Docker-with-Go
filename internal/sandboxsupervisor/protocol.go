@@ -57,6 +57,7 @@ type ExecutePythonRequest struct {
 	ExecutionID string
 	Source      string
 	Stdin       string
+	OutputPaths []string
 }
 
 type ExecutePythonResponse struct {
@@ -89,7 +90,26 @@ type ExecutePythonResult struct {
 	StderrTruncated bool                    `json:"stderr_truncated"`
 	TerminalReason  ExecutionTerminalReason `json:"terminal_reason"`
 	ResourceUsage   ExecutionResourceUsage  `json:"resource_usage"`
+	Outputs         []ExtractedOutput       `json:"outputs,omitempty"`
+	OutputError     OutputExtractionError   `json:"output_error,omitempty"`
 }
+
+// ExtractedOutput is a bounded byte snapshot, not yet a durable Run Artifact.
+// JSON transports Content as base64; size and SHA256 describe the decoded bytes.
+type ExtractedOutput struct {
+	Path    string `json:"path"`
+	Size    int64  `json:"size"`
+	SHA256  string `json:"sha256"`
+	Content []byte `json:"content"`
+}
+
+type OutputExtractionError string
+
+const (
+	OutputUnsafe      OutputExtractionError = "unsafe_output"
+	OutputLimit       OutputExtractionError = "output_limit"
+	OutputUnavailable OutputExtractionError = "output_unavailable"
+)
 
 type ExecutionTerminalReason string
 
