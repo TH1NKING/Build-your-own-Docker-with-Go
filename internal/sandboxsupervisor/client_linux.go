@@ -38,7 +38,7 @@ func (client *Client) CreateSandbox(ctx context.Context, request CreateSandboxRe
 func (client *Client) ExecutePython(ctx context.Context, request ExecutePythonRequest) (ExecutePythonResponse, error) {
 	var response ExecutePythonResponse
 	err := client.exchange(ctx, request.RequestID, OperationExecutePython, executePythonParameters{
-		SandboxID: request.SandboxID, ExecutionID: request.ExecutionID, Source: request.Source, Stdin: request.Stdin,
+		SandboxID: request.SandboxID, ExecutionID: request.ExecutionID, Source: request.Source, Stdin: request.Stdin, OutputPaths: request.OutputPaths,
 	}, &response)
 	return response, err
 }

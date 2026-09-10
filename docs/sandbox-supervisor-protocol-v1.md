@@ -13,6 +13,8 @@ identifier protection within one Supervisor lifetime.
 T11 adds independently bounded output and `get_execution_result` snapshots.
 T10 makes Workspace and temporary-storage budgets configurable and enforces
 them through per-Sandbox tmpfs mounts before any Workload starts.
+T14 adds declared output paths and bounded binary file snapshots in Execution
+Results, independently of stdout/stderr and tmpfs allocation budgets.
 The default protocol-only mode still returns `operation_unavailable` for a
 valid `create_sandbox` request whose Profile exists.
 
@@ -80,6 +82,10 @@ Trusted Resource Budget flags (defaults shown) are:
 --execution-timeout 1m
 --stdout-bytes 1048576
 --stderr-bytes 1048576
+--extract-file-bytes 20971520
+--extract-execution-bytes 33554432
+--extract-sandbox-bytes 104857600
+--extract-files 16
 --workspace-bytes 536870912
 --workspace-files 5000
 --temporary-bytes 16777216
@@ -94,12 +100,12 @@ whole memory pages; PID count must be positive. Invalid budgets fail startup.
 Execution timeout is a positive Go duration (for example `500ms` or `75s`);
 zero and negative durations are rejected. It is trusted startup policy, never
 a Worker request or Workload override.
-Each output budget is a positive byte count up to the v1 safety ceiling of
+Each stdout/stderr budget is a positive byte count up to the v1 safety ceiling of
 8 MiB. Output policy travels only on the private Supervisor-to-Init channel;
 the Init validates the same range before allocating its capture buffers.
-Rebuild and install a Profile Bundle containing the matching T11 Sandbox Init
+Rebuild and install a Profile Bundle containing the matching T14 Sandbox Init
 when updating the Supervisor: older private Init protocols do not accept the
-new output-policy fields. Bundle identities continue to include the Init digest.
+new extraction-policy fields. Bundle identities continue to include the Init digest.
 Budgets include Init and Workload tasks (including threads), and surviving
 Workspace tmpfs charges remain under the same parent across Executions.
 Very small valid policies may be insufficient to start or keep Init alive;
@@ -111,6 +117,24 @@ directories and kernel inode accounting. Zero never means unlimited policy.
 The Supervisor passes a typed storage record only to its private bootstrap;
 bootstrap strictly decodes and validates it before mounting. Neither public
 creation nor Execution requests accept storage overrides.
+
+Extraction budgets count decoded file bytes. The defaults are 20 MiB per file,
+32 MiB per Execution, 100 MiB cumulatively per Sandbox / Agent Run, and 16
+declared files per Execution. Per-file and per-Execution byte limits must each
+be positive and at most the fixed v1 ceiling of 32 MiB; the cumulative Sandbox
+limit must be positive. The declared-file limit must be between 1 and the fixed
+ceiling of 16. Unlike tmpfs byte budgets, these counts need not be page-aligned.
+Only trusted startup flags select them; public requests declare paths, never
+budgets. Init also validates the private per-file and remaining-total bounds.
+
+The allowance for a declaration batch is the minimum of the per-Execution
+budget, remaining cumulative Sandbox budget, and declared-file count times the
+per-file budget. Only successful complete snapshots consume cumulative raw
+bytes. Declaring the same file in a later Execution charges it again; rereading
+a retained Execution Result does not. Failed extraction batches charge no
+bytes, and deletion of Workspace files does not restore cumulative extraction
+allowance. Empty regular files cost zero bytes and can still be returned when
+the byte allowance is exhausted. The cumulative charge ends with the Sandbox.
 
 `/workspace` and `/tmp` are independent, per-Sandbox tmpfs instances. The
 Workspace default allows 512 MiB of allocated file data and 5,000 Workload
@@ -157,14 +181,21 @@ Requests are limited to 65,536 bytes. A declared larger request is
 rejected before its payload is read or allocated. Connections have a bounded
 deadline, and the Supervisor serves up to 16 control connections concurrently
 so an incomplete client cannot block unrelated requests. Responses permit at
-most 96 MiB + 64 KiB: JSON can expand each byte into six bytes, and each of the
-two streams has an 8 MiB safety ceiling. This is a wire ceiling, not the default
-capture allowance. Init `ready` responses use the same ceiling; Init requests
-and `started`/`exited` responses retain the 64 KiB bound. Receivers reject an
-oversized declared length before allocation. Bulk file transfer remains outside
-this protocol. Reading a request has a five-second deadline. Writing a
-response has a separate five-second window beginning when the result is ready.
-Neither window supplies the Execution deadline. Init startup and final
+most 160 MiB + 128 KiB: JSON can expand each text byte into six bytes, each of
+the two streams has an 8 MiB safety ceiling, and base64 file content is bounded
+by the 32 MiB raw extraction ceiling. The formula conservatively reserves
+64 MiB for encoded file bytes and 128 KiB for bounded paths and other metadata.
+This is a wire ceiling, not a default output allowance. Init `ready` responses
+use the same ceiling; Init requests and `started`/`exited` responses retain the
+64 KiB bound. Receivers reject an
+oversized declared length before allocation. Files are complete bounded JSON
+snapshots; streaming, resumable bulk transfer and Artifact Store uploads are
+outside this protocol. Reading a request has a five-second deadline. Public
+response encoding and writing share two concurrent slots, with a five-second
+wait for a slot and a separate five-second write deadline once admitted.
+Failure to obtain a slot closes that response attempt; it does not rerun an
+Execution or replace its retained result.
+These transport windows do not supply the Execution deadline. Init startup and final
 reap/readiness handshakes have separate five-second transport guards.
 
 JSON decoding is strict. Unknown fields, duplicate fields, trailing values,
@@ -210,7 +241,8 @@ Workload; the fixed interpreter is `/opt/python/bin/python3 -I -B -c <source>`:
     "sandbox_id": "run-001",
     "execution_id": "step-1",
     "source": "open('answer.txt', 'w').write('42'); print('saved')",
-    "stdin": ""
+    "stdin": "",
+    "output_paths": ["answer.txt"]
   }
 }
 ```
@@ -225,6 +257,36 @@ queued. Once the Sandbox is idle, reusing an Execution ID with a retained result
 returns `execution_exists`, without running code or changing that result. A
 fresh Execution needs a fresh ID. This does not provide durable dispatch or
 cross-restart deduplication; never automatically retry an uncertain execution.
+
+The optional `output_paths` list declares exact file paths relative to
+`/workspace/output`; omission or an empty list performs no file extraction.
+The Go client exposes this as `ExecutePythonRequest.OutputPaths`. Each path
+must be nonempty, valid UTF-8, at most 1,024 bytes, and already normalized with
+`/` separators. Absolute paths, `.`, `..`, parent traversal, repeated separators,
+trailing separators, backslashes, NUL bytes and duplicate declarations are
+rejected with `invalid_reference` before code starts. The list must fit the
+trusted file-count budget and the fixed maximum of 16, and the complete
+request must still fit the 64 KiB frame. Nested relative paths are supported;
+glob expansion and directory export are not.
+
+After Python exits or is terminated, the Supervisor kills its entire Execution
+cgroup, and Init reaps all descendants and drains their streams. While the
+Supervisor still holds the Sandbox's Execution lock, trusted Init pins the
+output root with `O_PATH` and resolves every component with directory-relative
+`openat` and `O_NOFOLLOW`. The leaf must be a regular file with exactly one hard
+link, and every component must remain on the output root's filesystem. Only
+then does Init obtain a read handle through its own `/proc/self/fd/<pinned-fd>`.
+Caller-supplied `/proc` or host paths are never used for that read.
+
+Init checks the logical size before allocating, reads exactly that many bytes,
+requires EOF immediately afterwards, checks descriptor metadata again, and
+reresolves the original path to compare every directory and leaf identity.
+Metadata comparison includes device, inode, mode, link count, owner, size,
+mtime and ctime. This supplements descendant termination and sequential
+execution; metadata checks alone do not establish a consistent snapshot while
+an untrusted writer remains active. Missing files, unsafe types or paths, and
+observed changes fail the whole declaration batch. Undeclared content is never
+scanned or extracted and remains available to later Executions.
 
 Read one completed result without contacting Init:
 
@@ -241,14 +303,21 @@ Read one completed result without contacting Init:
 original execution response, with the new read request's envelope identity.
 Unknown references return `execution_result_not_found`; a reserved, still
 running Execution returns `execution_result_not_ready`. The method accepts no
-source, host path, output override or other execution parameters. It does not
+source, host path, output override or other execution parameters. File bytes,
+paths, sizes and digests come from the immutable retained snapshot even if a
+later Execution changes or deletes the original files. Reading neither reopens
+Workspace files nor charges extraction allowance again. It does not
 wait for an Execution lock and cannot cancel a Sandbox when its client closes.
 
 The Supervisor reserves a result slot before starting code or acquiring
 cancellation ownership. Across all Sandboxes it retains at most 64 slots and
-128 MiB of reserved output allowance; each slot reserves the sum of its trusted
-stdout and stderr budgets, even if the actual output is shorter. Full capacity
-returns `execution_result_capacity`, keeping existing results readable and
+128 MiB of reserved output allowance. Before execution, each slot reserves the
+sum of its trusted stdout/stderr budgets and the potential file-extraction
+allowance for this batch. When a result is published, unused extraction
+reservation is released; the original stdout/stderr reservation remains even
+if the captured streams are shorter. Successful file snapshots retain their
+actual raw-byte charge. Full capacity returns `execution_result_capacity`,
+keeping existing results readable and
 leaving the Sandbox alive. These bounds cover retained output and entry count,
 not total process RSS: JSON encoding/decoding and concurrent response delivery
 also use bounded transient memory.
@@ -367,7 +436,39 @@ Exactly filling a budget does not mark truncation; discarding any suffix does.
 Invalid UTF-8 is replaced, then text is shortened to a valid UTF-8 byte boundary
 if replacement expanded it beyond budget. Such shortening also marks truncation.
 The stored text owns a bounded allocation, not a slice retaining the expanded
-conversion buffer. Output is a lossy text representation, not a binary transfer.
+conversion buffer. Stdout/stderr are lossy text representations; declared file
+snapshots preserve binary bytes separately.
+
+T14 adds optional `outputs` and `output_error` fields inside the Execution
+Result. Each successful output contains `path`, `size`, `sha256`, and `content`.
+`size` and the lowercase hexadecimal SHA-256 describe the decoded raw bytes;
+JSON encodes `content` as base64, and the Go client decodes it into `[]byte`.
+The output list follows declaration order. For example, a file containing
+exactly the three bytes `abc` produces this output entry:
+
+```json
+{
+  "path": "answer.txt",
+  "size": 3,
+  "sha256": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+  "content": "YWJj"
+}
+```
+
+Extraction is all-or-nothing: any unsafe file yields `output_error` of
+`unsafe_output`, and exceeding a logical-byte allowance yields `output_limit`;
+either case omits the entire `outputs` list. These are result fields, not
+top-level protocol errors. The real `exit_code`, `terminal_reason`, captured
+streams and their truncation flags remain independent. A failed Python
+Execution can still yield declared files if cleanup and extraction succeed;
+an exit code of zero does not imply extraction succeeded. No declarations or a
+successful batch omit `output_error`. A zero-byte file has an empty base64
+string and the SHA-256 of an empty byte sequence.
+
+These snapshots are local temporary results, not durable Run Artifacts. T14
+does not add an Artifact Store, OSS upload, a download interface or Attachment
+promotion. SHA-256 identifies the snapshot contents; it does not establish
+that the contents are safe or semantically correct.
 
 The result is published once, after descendant cleanup, Init's final response,
 and resource accounting. Reads do not recapture streams or rerun Workloads.
@@ -418,7 +519,9 @@ sets the blocked Workload launcher's adjustment back to zero and confirms it.
 guarantee Init can survive every resource failure. If kernel evidence proves
 exhaustion but Init cannot finish its handshake, the result retains that
 resource reason with `exit_code=-1`, empty streams and all three truncation flags true to
-indicate unavailable output/status; that Sandbox is invalidated and torn down.
+indicate unavailable output/status. If files were declared, it also omits
+`outputs` and reports `output_error: "output_unavailable"`; it never presents
+missing extraction as a successful empty batch. That Sandbox is invalidated and torn down.
 Usable Init state and complete cleanup are required for sequential reuse.
 
 T12 adds `timed_out`. The Supervisor establishes one monotonic deadline just
@@ -556,8 +659,10 @@ or promise cross-restart idempotency. T09 adds Sandbox cgroup Resource Budgets
 but no crash-recovery contract. Cgroup cleanup failures retain owned handles
 and the Sandbox identity reservation for a later `destroy_sandbox` retry;
 successful destruction waits for removal of the Execution, Init, and budget
-groups. T11's bounded local result snapshots add no crash recovery. Complete
-mount hardening remains T07. This is not the complete
+groups. T11 and T14's bounded local result snapshots add no crash recovery.
+Complete mount hardening remains T07, Attachment binding remains T13, and
+combined security acceptance remains T15. ArtifactStore integration is later
+work starting with T16. This is not the complete
 production security boundary.
 
 ## Verification
@@ -613,3 +718,10 @@ inside disposable namespaces and allocate only a temporary test cgroup subtree.
 See the [T05 learning guide](learning/t05-sandbox-init.md) for the design tradeoffs.
 The [T06 learning guide](learning/t06-sandbox-lifecycle.md) explains lifecycle
 ownership, cancellation, cleanup ordering, and a complete client example.
+
+The [T14 learning guide](learning/t14-declared-output-extraction.md) explains
+descriptor-based extraction, byte and file-count budgets, snapshot retention
+and the current verification record. Focused real-CPython extraction acceptance
+uses `SANDBOX_TEST_RUN='^TestSandboxExecutionExtraction'` with the same Init
+harness. Compilation or protocol-only tests do not establish the real-kernel
+file-type, descendant-cleanup and replacement-race properties.

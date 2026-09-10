@@ -14,20 +14,24 @@ import (
 )
 
 type executePythonParameters struct {
-	SandboxID   string `json:"sandbox_id"`
-	ExecutionID string `json:"execution_id"`
-	Source      string `json:"source"`
-	Stdin       string `json:"stdin"`
+	SandboxID   string   `json:"sandbox_id"`
+	ExecutionID string   `json:"execution_id"`
+	Source      string   `json:"source"`
+	Stdin       string   `json:"stdin"`
+	OutputPaths []string `json:"output_paths,omitempty"`
 }
 
 const initTransportTimeout = 5 * time.Second
 
 func (service *server) executePythonResponse(operation *controlOperation, requestID string, raw json.RawMessage) responseEnvelope {
 	var parameters executePythonParameters
-	if err := decodeStrictJSON(raw, &parameters, "sandbox_id", "execution_id", "source", "stdin"); err != nil || parameters.Source == "" || strings.ContainsRune(parameters.Source, 0) || len(parameters.Source) > 32<<10 || len(parameters.Stdin) > 8<<10 {
+	if err := decodeStrictJSON(raw, &parameters, "sandbox_id", "execution_id", "source", "stdin", "output_paths"); err != nil || parameters.Source == "" || strings.ContainsRune(parameters.Source, 0) || len(parameters.Source) > 32<<10 || len(parameters.Stdin) > 8<<10 {
 		return protocolErrorResponse(requestID, ErrorCodeMalformedRequest)
 	}
-	if !validOpaqueIdentifier(parameters.SandboxID) || !validOpaqueIdentifier(parameters.ExecutionID) {
+	if !validOpaqueIdentifier(parameters.SandboxID) || !validOpaqueIdentifier(parameters.ExecutionID) || !validOutputPaths(parameters.OutputPaths) {
+		return protocolErrorResponse(requestID, ErrorCodeInvalidReference)
+	}
+	if len(parameters.OutputPaths) > service.creator.config.ResourceBudget.Extraction.Files {
 		return protocolErrorResponse(requestID, ErrorCodeInvalidReference)
 	}
 	if !service.creator.enabled() {
@@ -55,11 +59,17 @@ func (creator *sandboxCreator) execute(operation *controlOperation, parameters e
 	defer sandbox.execution.Unlock()
 	reference := executionResultReference{SandboxID: parameters.SandboxID, ExecutionID: parameters.ExecutionID}
 	budget := creator.config.ResourceBudget
-	if code := creator.results.reserve(reference, budget.StdoutBytes+budget.StderrBytes); code != "" {
+	extractionBytes := budget.Extraction.allowance(parameters.OutputPaths, sandbox.extractedBytes)
+	if code := creator.results.reserve(reference, budget.StdoutBytes+budget.StderrBytes, int(extractionBytes)); code != "" {
 		return nil, code
 	}
 	// Freeze only after all Execution cleanup, but before releasing the lock.
-	defer func() { creator.results.finish(reference, snapshot) }()
+	defer func() {
+		if snapshot != nil && len(parameters.OutputPaths) != 0 && snapshot.Outputs == nil && snapshot.OutputError == "" {
+			snapshot.OutputError = OutputUnavailable
+		}
+		creator.results.finish(reference, snapshot)
+	}()
 	operation.own(sandbox)
 	select {
 	case <-sandbox.exited:
@@ -94,7 +104,8 @@ func (creator *sandboxCreator) execute(operation *controlOperation, parameters e
 		return nil, ErrorCodeExecutionFailed
 	}
 	if err := sendInitRequest(sandbox.requests, initRequest{Action: "start", Source: parameters.Source, Stdin: parameters.Stdin,
-		StdoutBytes: creator.config.ResourceBudget.StdoutBytes, StderrBytes: creator.config.ResourceBudget.StderrBytes}); err != nil {
+		StdoutBytes: budget.StdoutBytes, StderrBytes: budget.StderrBytes, OutputPaths: parameters.OutputPaths,
+		OutputFileBytes: budget.Extraction.FileBytes, OutputTotalBytes: extractionBytes}); err != nil {
 		return nil, ErrorCodeExecutionFailed
 	}
 	started, err := receiveInitResponse(sandbox.responses, "started")
@@ -153,13 +164,18 @@ func (creator *sandboxCreator) execute(operation *controlOperation, parameters e
 	if err != nil {
 		return incompleteResourceResult(parameters.ExecutionID, reason, usage)
 	}
+	if !validExtractedOutputs(result, parameters.OutputPaths, budget.Extraction.FileBytes, extractionBytes) {
+		return nil, ErrorCodeExecutionFailed
+	}
 	if err := group.close(); err != nil {
 		return nil, ErrorCodeExecutionFailed
 	}
 	sandbox.cgroups.execution = nil
 	complete = true
+	sandbox.extractedBytes += extractedOutputBytes(result.Outputs)
 	return &ExecutePythonResult{ExecutionID: parameters.ExecutionID, ExitCode: result.ExitCode, Stdout: result.Stdout, Stderr: result.Stderr, Truncated: result.Truncated,
-		StdoutTruncated: result.StdoutTruncated, StderrTruncated: result.StderrTruncated, TerminalReason: reason, ResourceUsage: usage}, ""
+		StdoutTruncated: result.StdoutTruncated, StderrTruncated: result.StderrTruncated, TerminalReason: reason, ResourceUsage: usage,
+		Outputs: result.Outputs, OutputError: result.OutputError}, ""
 }
 
 func incompleteResourceResult(executionID string, reason ExecutionTerminalReason, usage ExecutionResourceUsage) (*ExecutePythonResult, ErrorCode) {
@@ -275,7 +291,7 @@ func receiveInitResponse(file *os.File, phase string) (initResponse, error) {
 		return initResponse{}, err
 	}
 	var response initResponse
-	if err := decodeStrictJSON(payload, &response, "phase", "pid", "exit_code", "stdout", "stderr", "truncated", "stdout_truncated", "stderr_truncated"); err != nil {
+	if err := decodeStrictJSON(payload, &response, "phase", "pid", "exit_code", "stdout", "stderr", "truncated", "stdout_truncated", "stderr_truncated", "outputs", "output_error"); err != nil {
 		return initResponse{}, err
 	}
 	if response.Phase != phase {

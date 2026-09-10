@@ -13,7 +13,9 @@ const maximumControlMessageSize = 64 << 10
 
 // JSON can escape one output byte as six bytes (for example, NUL).
 // Requests retain their smaller bound; only result responses use this bound.
-const maximumResultMessageSize = 12*maximumOutputBytes + maximumControlMessageSize
+// File content is base64 (less than twice the raw budget); the final allowance
+// also covers the bounded path list even when every path byte is JSON-escaped.
+const maximumResultMessageSize = 12*maximumOutputBytes + 2*maximumExtractionBytes + 2*maximumControlMessageSize
 
 var errControlMessageTooLarge = errors.New("control message is too large")
 

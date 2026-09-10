@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -66,7 +67,7 @@ func TestSandboxExecutionOutputEscapingFitsPublicResponses(t *testing.T) {
 	snapshot, err := client.GetExecutionResult(ctx, sandboxsupervisor.GetExecutionResultRequest{
 		RequestID: "read-escaped", SandboxID: "run-escaped", ExecutionID: "escaped",
 	})
-	if err != nil || snapshot.Error != nil || snapshot.Result == nil || *snapshot.Result != *result {
+	if err != nil || snapshot.Error != nil || snapshot.Result == nil || !reflect.DeepEqual(snapshot.Result, result) {
 		t.Fatalf("public client could not reread the large immutable result: error=%v transport=%v", snapshot.Error, err)
 	}
 }

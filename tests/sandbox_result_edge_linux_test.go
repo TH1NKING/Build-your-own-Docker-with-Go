@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"reflect"
 	"strconv"
 	"syscall"
 	"testing"
@@ -57,7 +58,7 @@ func TestSandboxExecutionResultReadsDoNotOwnRunningExecution(t *testing.T) {
 			response, err := client.GetExecutionResult(readCtx, sandboxsupervisor.GetExecutionResultRequest{
 				RequestID: fmt.Sprintf("concurrent-%d", i), SandboxID: sandboxID, ExecutionID: "first",
 			})
-			if err == nil && (response.Error != nil || response.Result == nil || *response.Result != *snapshot.Result) {
+			if err == nil && (response.Error != nil || response.Result == nil || !reflect.DeepEqual(response.Result, snapshot.Result)) {
 				err = fmt.Errorf("concurrent read changed the immutable snapshot or waited on Init: %+v", response.Error)
 			}
 			reads <- err

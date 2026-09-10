@@ -20,8 +20,9 @@ type executionResultReference struct {
 }
 
 type executionResultSlot struct {
-	reservedBytes int
-	result        *ExecutePythonResult // nil until the complete immutable snapshot is published
+	reservedBytes           int
+	extractionReservedBytes int
+	result                  *ExecutePythonResult // nil until the complete immutable snapshot is published
 }
 
 type executionResultStore struct {
@@ -30,7 +31,8 @@ type executionResultStore struct {
 	reservedBytes int
 }
 
-func (store *executionResultStore) reserve(reference executionResultReference, bytes int) ErrorCode {
+func (store *executionResultStore) reserve(reference executionResultReference, outputBytes, extractionBytes int) ErrorCode {
+	bytes := outputBytes + extractionBytes
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	if _, exists := store.slots[reference]; exists {
@@ -42,7 +44,7 @@ func (store *executionResultStore) reserve(reference executionResultReference, b
 	if store.slots == nil {
 		store.slots = make(map[executionResultReference]executionResultSlot)
 	}
-	store.slots[reference] = executionResultSlot{reservedBytes: bytes}
+	store.slots[reference] = executionResultSlot{reservedBytes: bytes, extractionReservedBytes: extractionBytes}
 	store.reservedBytes += bytes
 	return ""
 }
@@ -60,6 +62,12 @@ func (store *executionResultStore) finish(reference executionResultReference, re
 		return
 	}
 	snapshot := *result
+	// Ownership of the decoded output slices transfers to this immutable
+	// snapshot. No internal caller mutates them; public reads decode fresh JSON.
+	unused := slot.extractionReservedBytes - int(extractedOutputBytes(result.Outputs))
+	slot.reservedBytes -= unused
+	store.reservedBytes -= unused
+	slot.extractionReservedBytes = 0
 	slot.result = &snapshot
 	store.slots[reference] = slot
 }
