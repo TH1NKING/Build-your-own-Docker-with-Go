@@ -4,20 +4,46 @@
 
 ## 准备一次
 
-在专用、可丢弃的 Linux 环境中进入仓库根目录。需要 Go、Bash、util-linux、非交互 sudo（以 root 运行则不需要 sudo），以及可委派 `cpu memory pids` 的 cgroup v2。按 [Profile Bundle 文档](../profile-bundle-v1.md) 准备锁定的源码缓存，然后配置：
+在专用、可丢弃的 Linux 环境中进入仓库根目录。需要满足 `go.mod` 的 Go 工具链、Bash、util-linux、iproute2、sudo，以及可委派 `cpu memory pids` 的 cgroup v2。下载阶段还需要 curl、CA 证书和 jq；Ubuntu 可以先安装辅助工具：
+
+```bash
+sudo apt update &&
+sudo apt install -y curl ca-certificates jq util-linux iproute2
+```
+
+**运行演示前，必须先下载并校验 Python Profile 的两份输入归档。** `git clone` 不包含 `.cache`，Go 自动下载的模块也不包含这两份运行时文件。先指定当前 checkout 的缓存位置：
 
 ```bash
 export PROFILE_BUNDLE_SOURCE_CACHE="$(pwd)/.cache/profile-sources"
-# 如果自动发现的 cgroup 父目录不可用，指定已委派的测试目录：
-# export SANDBOX_TEST_CGROUP_PARENT=/absolute/delegated/cgroup
 ```
 
-第一次运行会构建命令和 Bundle。完成后可以用 `SANDBOX_TEST_BIN_DIR` 复用；代码改变后取消这个变量，让脚本重新构建。
+这条 `export` **只指定目录，不会下载文件**。接着完整执行 [下载与校验命令](../profile-bundle-v1.md#prepare-the-source-cache)，直到输出 `PROFILE_SOURCES_READY`。命令从锁定文件读取 URL、文件名、精确大小与 SHA-256，复用已校验的缓存，补齐缺失或损坏的文件。当前目录应包含：
+
+```text
+.cache/profile-sources/
+├── alpine-minirootfs-3.22.5-x86_64.tar.gz
+└── cpython-3.14.7+20260825-x86_64-unknown-linux-musl-install_only_stripped.tar.gz
+```
+
+无需手工解压；构建工具读取这些归档并组装 Bundle。换一个 clone 目录时，需要重新准备缓存，或把 `PROFILE_BUNDLE_SOURCE_CACHE` 指向先前已校验的绝对路径。
+
+缓存准备完成后，再按环境选择 cgroup 父目录并启用首次构建：
+
+```bash
+# 如果自动发现的 cgroup 父目录不可用，指定已委派的测试目录：
+# export SANDBOX_TEST_CGROUP_PARENT=/absolute/delegated/cgroup
+unset SANDBOX_TEST_BIN_DIR
+```
+
+第一次运行会构建命令和 Bundle，可能下载 Go 模块。下面的 `sudo -v` 先验证密码，供脚本稍后的 `sudo -n` 使用，无需配置永久免密 sudo。只在构建和演示成功后设置 `SANDBOX_TEST_BIN_DIR` 复用产物；代码改变后取消这个变量，让脚本重新构建。
+
+如果看到 `profile-bundle: open locked source ... no such file or directory`，说明归档没有位于当前缓存目录，尚未进入 Sandbox 执行。检查 `printf '%s\n' "$PROFILE_BUNDLE_SOURCE_CACHE"` 和 `ls -lh "$PROFILE_BUNDLE_SOURCE_CACHE"`，再执行上面的下载与校验命令；只留下 `.part` 表示下载或校验没有完成。
 
 ## 1. 正常处理：文件确实进入并离开沙箱
 
 ```bash
-bash tests/run-sandbox-file-demo-linux.sh normal
+sudo -v &&
+bash tests/run-sandbox-file-demo-linux.sh normal &&
 export SANDBOX_TEST_BIN_DIR="$(pwd)/.cache/sandbox-init"
 ```
 
@@ -41,10 +67,12 @@ PASS
 
 关注三个不同事实：stdout 只报告处理进度；结果 JSON 来自实际提取的文件字节；大小和 SHA-256 对应那份字节快照。这里还没有 ArtifactStore 上传或下载界面。
 
+如果首次构建耗时过长，末尾出现 `sudo: a password is required`，而 `.cache/sandbox-init/python.bundle` 已成功生成，可以重新运行 `sudo -v`，再用 `SANDBOX_TEST_BIN_DIR="$PWD/.cache/sandbox-init" bash tests/run-sandbox-file-demo-linux.sh normal` 复用已构建产物。尚未生成 Bundle 时应保持 `SANDBOX_TEST_BIN_DIR` 未设置，补齐来源或修复构建错误后重试。
+
 ## 2. 破坏输入：拒绝后仍可继续执行
 
 ```bash
-bash tests/run-sandbox-file-demo-linux.sh read-only
+sudo -v && bash tests/run-sandbox-file-demo-linux.sh read-only
 ```
 
 脚本依次尝试覆盖输入、删除输入、把输入移到 output、在 input 新建文件、修改文件权限、修改 input 目录权限。它要求六次都被拒绝，并读取 `/proc/self/mountinfo` 确认文件与 input 目录确实带有 `ro,nosuid,nodev,noexec`。
@@ -62,7 +90,7 @@ PASS
 ## 3. 恶意来源：在创建之前拒绝
 
 ```bash
-bash tests/run-sandbox-file-demo-linux.sh malicious
+sudo -v && bash tests/run-sandbox-file-demo-linux.sh malicious
 ```
 
 脚本提交不存在的标识、符号链接、目录、FIFO、硬链接、可写文件、错误所有者、超大文件、`../valid` 和 `/etc/passwd`。每种来源都必须得到 `invalid_reference`。还会检查嵌套 JSON 的未知字段、重复字段、非法名字与重复声明。
@@ -81,9 +109,9 @@ PASS
 ## 连续演示与完整验收
 
 ```bash
-bash tests/run-sandbox-file-demo-linux.sh all
+sudo -v && bash tests/run-sandbox-file-demo-linux.sh all
 unset SANDBOX_TEST_BIN_DIR
-bash tests/run-sandbox-acceptance-linux.sh
+sudo -v && bash tests/run-sandbox-acceptance-linux.sh
 ```
 
 三组演示适合向别人解释正常路径和失败行为；完整验收还检查身份映射、旧根、内核视图、网络、seccomp、资源预算、超时、输出和清理。后者没有执行完并通过时，不能用演示通过代替 T15 结论。
