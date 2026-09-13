@@ -1,4 +1,4 @@
-.PHONY: build check fmt-check shell-check test test-migrations test-sandbox-creation test-sandbox-init test-sandbox-acceptance vet
+.PHONY: build check fmt-check shell-check test test-migrations test-worker-api test-worker-execution test-sandbox-creation test-sandbox-init test-sandbox-acceptance vet
 
 GO_FILES := $(shell find . -type f -name '*.go' -not -path './.git/*' -not -path './.cache/*')
 
@@ -22,6 +22,13 @@ test-migrations:
 	@test -n "$$AGENT_TEST_DATABASE_URL" || { echo 'AGENT_TEST_DATABASE_URL must point to a dedicated test PostgreSQL instance'; exit 1; }
 	go test ./tests -run '^TestAgentctlMigration' -count=1
 
+test-worker-api:
+	@test -n "$$AGENT_TEST_DATABASE_URL" || { echo 'AGENT_TEST_DATABASE_URL must point to a dedicated test PostgreSQL instance'; exit 1; }
+	go test ./tests -run '^(TestWorkerCredential|TestWorkerAPI|TestAgentctlWorker|TestControlPlane)' -count=1
+
+test-worker-execution:
+	bash tests/run-worker-execution-linux.sh
+
 build:
 	go build ./...
 
@@ -31,6 +38,7 @@ shell-check:
 	bash -n tests/run-sandbox-init-linux.sh
 	bash -n tests/run-sandbox-acceptance-linux.sh
 	bash -n tests/run-sandbox-file-demo-linux.sh
+	bash -n tests/run-worker-execution-linux.sh
 	bash -n tests/sandbox-cgroup-fixture.sh
 
 test-sandbox-creation:

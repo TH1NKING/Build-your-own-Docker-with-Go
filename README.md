@@ -13,7 +13,9 @@
 - `tests`：面向公开命令入口的 Linux 验收测试。
 - `cmd/profile-bundle`：构建和 root-owned 安装 `python-data-v1` Profile Bundle 的公开工具。
 - `cmd/sandboxd`：Linux 上的特权 Sandbox Supervisor 入口；仅开放受限本地协议，不接受通用宿主机命令或路径。
-- `cmd/agentctl`：Control Plane 运维入口，当前提供 PostgreSQL 版本化迁移和只读版本检查。
+- `cmd/agentctl`：Control Plane 运维入口，提供 PostgreSQL 迁移、只读版本检查和 Worker 凭据管理。
+- `cmd/control-plane`：提供 Worker HTTPS API，启动前检查数据库和迁移就绪。
+- `cmd/worker`：非特权 Linux Worker，领取 Execution、调用本地 Supervisor 并幂等上报结果。
 - `profiles/python-data-v1`：锁定的 Runtime Profile 输入与候选 System Call Policy。
 - `docs/adr` 与 `CONTEXT.md`：目标系统的架构决策和上下文文档。
 - [`CONTRIBUTORS.md`](CONTRIBUTORS.md)：项目贡献者与协作者署名。
@@ -86,6 +88,10 @@ T13 增加创建时固定的只读附件输入：可信启动参数 `--attachmen
 T07 增加只含 `/dev/null`、`/dev/zero` 的定额只读设备视图，并将独立 `/proc` 设为只读、遮蔽固定敏感条目。真实 Linux 验收检查宿主文件和 socket 不会被继承，以及独立于 seccomp 的入站、出站网络隔离。设计、替代方案、暂存区权限和旧 Profile 升级要求见 [`T13/T07 学习笔记`](docs/learning/t13-t07-sandbox-boundary.md)。这仍是共享 Linux 内核的受约束沙箱，不代表完整 Agent 平台或任意攻击条件下的安全保证。
 
 T15 的 `make test-sandbox-acceptance` 将完整 Execution/Lifecycle 与创建验收组合执行，保留独立日志，任一失败、跳过或零测试都拒绝通过。设置 `PROFILE_BUNDLE_SOURCE_CACHE` 后也可直接运行 `bash tests/run-sandbox-acceptance-linux.sh`。覆盖矩阵与内核实测记录见 [`T15 联合验收`](docs/learning/t15-kernel-acceptance.md)。另有 [`三组文件演示`](docs/learning/sandbox-file-demo.md)：正常 CSV 处理、六种输入修改拒绝、恶意来源拒绝，均可通过脚本重复执行。
+
+T22–T24 已接通 Worker 身份、PostgreSQL Execution 队列和单次沙箱执行：`agentctl worker` 管理独立凭据，数据库只存摘要；Worker 通过 HTTPS 长轮询领取带代际和期限的 Lease。领取与结果提交使用事务和行锁，拒绝错误 Worker、代际与过期结果；结果确认丢失时只重报同一快照，不重新执行 Python。Worker 以非 root 账户运行，确认或失败退出后独立清理 Sandbox。
+
+`make test-worker-api` 验证真实 PostgreSQL 上的凭据、并发领取和不可变结果；`make test-worker-execution` 验证真实 Linux、TLS、Supervisor 和 Python，包括提交后断连、私有 CA、非 root Worker 与二进制输出。两者均要求专用 `AGENT_TEST_DATABASE_URL`。当前每个 Agent Run 只有一次 Execution，Control Plane 入口只监听 loopback；多步复用、心跳恢复、容量调度和公网部署由后续 ticket 完成。[Worker API 合同](docs/worker-api-v1.md)说明命令与失败语义，[T22–T24 学习笔记](docs/learning/t22-t24-worker-execution.md)说明事务、租约、幂等和方案取舍。
 
 ## 使用 Go Runtime Lab
 
