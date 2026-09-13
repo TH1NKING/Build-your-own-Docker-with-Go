@@ -18,8 +18,21 @@ Results, independently of stdout/stderr and tmpfs allocation budgets.
 T13 adds creation-time read-only Attachment inputs from a trusted staging root.
 T07 supplies minimal device and restricted proc views, with descriptor and
 network isolation acceptance. T15 joins the real-kernel suites without skips.
+T31 adds read-only `inspect_sandbox` to check the original Sandbox before a
+Worker asks the Control Plane to restore an Execution Lease.
 The default protocol-only mode still returns `operation_unavailable` for a
 valid `create_sandbox` request whose Profile exists.
+
+## Inspect the original Sandbox
+
+`inspect_sandbox` accepts only `sandbox_id` and returns that same ID when the
+original Sandbox has a live Init, intact private control channels, an active
+lifecycle and unchanged runtime directory identity. Missing, terminating or
+failed-cleanup Sandboxes are rejected. Inspection works during an Execution;
+it does not acquire the Execution lock or cancellation ownership. Losing the
+inspection connection cannot cancel the Workload. A retained Execution Result
+is not evidence that its Sandbox is still alive, and successful inspection is
+only a snapshot, not a guarantee of future availability.
 
 ## Trusted startup configuration
 

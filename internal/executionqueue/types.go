@@ -29,16 +29,40 @@ type Lease struct {
 	AgentRunID  string    `json:"agent_run_id"`
 	Generation  int64     `json:"generation"`
 	ExpiresAt   time.Time `json:"expires_at"`
-	Source      string    `json:"source"`
-	Stdin       string    `json:"stdin"`
+	Source      string    `json:"source,omitempty"`
+	Stdin       string    `json:"stdin,omitempty"`
 	OutputPaths []string  `json:"output_paths,omitempty"`
 }
 
 type Record struct {
-	Execution  Execution
-	State      string
-	WorkerID   string
-	Generation int64
-	ExpiresAt  *time.Time
-	Result     *sandboxsupervisor.ExecutePythonResult
+	Execution      Execution
+	State          string
+	WorkerID       string
+	Generation     int64
+	ExpiresAt      *time.Time
+	Result         *sandboxsupervisor.ExecutePythonResult
+	RecoveryUntil  *time.Time
+	SandboxID      string
+	CleanupUnknown bool
+}
+
+type Capacity struct {
+	WorkerID   string `json:"worker_id"`
+	Configured int    `json:"configured"`
+	Occupied   int    `json:"occupied"`
+	Available  int    `json:"available"`
+}
+
+type Authority struct {
+	Lease         Lease     `json:"lease"`
+	State         string    `json:"state"`
+	ServerTime    time.Time `json:"server_time"`
+	RecoveryUntil time.Time `json:"recovery_until"`
+}
+
+type OutstandingExecution struct {
+	Lease          Lease  `json:"lease"`
+	SandboxID      string `json:"sandbox_id"`
+	State          string `json:"state"`
+	CleanupUnknown bool   `json:"cleanup_unknown"`
 }

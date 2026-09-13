@@ -78,7 +78,7 @@ if [[ "$EUID" != 0 ]]; then privilege=(sudo -n); fi
     export WORKER_CLI=/tmp/worker-bin/worker
     export PROFILE_BUNDLE_CLI=/tmp/worker-bin/profile-bundle SANDBOX_EXECUTION_BUNDLE=/tmp/worker-bin/python.bundle
     uname -sr
-    /tmp/worker-bin/t05-tests -test.v -test.run="^TestWorkerExecution" -test.timeout=300s
+    /tmp/worker-bin/t05-tests -test.v -test.run="^(TestWorkerExecution|TestSandboxInspection)" -test.timeout=300s
   ' worker-execution "$sandbox_bin_dir" "${SANDBOX_TEST_CGROUP_PARENT:-}" \
   2>&1 | tee "$log_dir/execution.log"
 
@@ -91,6 +91,15 @@ required_tests=(
   TestWorkerExecutionRetriesLostAcknowledgementWithoutRunningPythonAgain
   TestWorkerExecutionCommandUsesAnUnprivilegedAccountAndPrivateCA
   TestWorkerExecutionPreservesDeclaredBinaryOutputs
+  TestWorkerExecutionCapacityRunsTwoSandboxesAndQueuesTheThird
+  TestWorkerExecutionCleanupFailureRetainsCapacityAndStopsTheNode
+  TestWorkerExecutionRecoversTheSameSandboxAfterHTTPSDisconnection
+  TestWorkerExecutionRecoveryExpiryCleansUpWithoutReplayingWork
+  TestWorkerExecutionHealthyHeartbeatsDoNotHideReportFailure
+  TestWorkerExecutionCommittedResultAcknowledgementHasABoundedWait
+  TestSandboxInspectionRequiresTheOriginalLiveSandbox
+  TestSandboxInspectionDuringExecutionDoesNotCancelTheWorkload
+  TestSandboxInspectionRejectsLostInitDespiteRetainedResult
 )
 for required_test in "${required_tests[@]}"; do
   if ! grep -Eq "^--- PASS: $required_test " "$log_dir/execution.log"; then

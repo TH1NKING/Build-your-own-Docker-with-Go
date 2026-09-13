@@ -9,12 +9,24 @@ import (
 )
 
 type Lease = executionqueue.Lease
+type Capacity = executionqueue.Capacity
+type Authority = executionqueue.Authority
+type OutstandingExecution = executionqueue.OutstandingExecution
+type capacityRequest struct{}
+type configureCapacityRequest struct {
+	Capacity int `json:"capacity"`
+}
 type claimRequest struct {
 	WaitMilliseconds int64 `json:"wait_ms"`
 }
 type leaseReference struct {
 	ExecutionID string `json:"execution_id"`
 	Generation  int64  `json:"generation"`
+}
+type sandboxReference struct {
+	ExecutionID string `json:"execution_id"`
+	Generation  int64  `json:"generation"`
+	SandboxID   string `json:"sandbox_id"`
 }
 type completeRequest struct {
 	ExecutionID string                                `json:"execution_id"`

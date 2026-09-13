@@ -17,25 +17,25 @@ func (s *Store) CheckReady(ctx context.Context) error {
 	defer closeConnection(conn)
 	notReady := errors.New("Control Plane database schema is not ready; run agentctl migrate")
 	var version int
-	if err := conn.QueryRow(ctx, `SELECT COALESCE(MAX(version),0) FROM public.agentctl_schema_migrations`).Scan(&version); err != nil || version < 3 {
+	if err := conn.QueryRow(ctx, `SELECT COALESCE(MAX(version),0) FROM public.agentctl_schema_migrations`).Scan(&version); err != nil || version < 5 {
 		return notReady
 	}
-	workers, err := conn.Query(ctx, `SELECT credential_sha256,id,credential_generation,created_at,expires_at,revoked_at FROM control_plane.worker_nodes LIMIT 0`)
+	workers, err := conn.Query(ctx, `SELECT credential_sha256,id,credential_generation,created_at,expires_at,revoked_at,sandbox_capacity FROM control_plane.worker_nodes LIMIT 0`)
 	if err != nil {
 		return notReady
 	}
 	workerFields := workers.FieldDescriptions()
-	workerReady := len(workerFields) == 6 && workerFields[0].DataTypeOID == pgtype.ByteaOID
+	workerReady := len(workerFields) == 7 && workerFields[0].DataTypeOID == pgtype.ByteaOID && workerFields[6].DataTypeOID == pgtype.Int4OID
 	workers.Close()
 	if !workerReady || workers.Err() != nil {
 		return notReady
 	}
-	executions, err := conn.Query(ctx, `SELECT workload,result,id,agent_run_id,queued_order,state,worker_id,generation,lease_expires_at FROM control_plane.executions LIMIT 0`)
+	executions, err := conn.Query(ctx, `SELECT workload,result,id,agent_run_id,queued_order,state,worker_id,generation,lease_expires_at,capacity_released,sandbox_id,recovery_until,cleanup_unknown FROM control_plane.executions LIMIT 0`)
 	if err != nil {
 		return notReady
 	}
 	fields := executions.FieldDescriptions()
-	ready := len(fields) == 9 && fields[0].DataTypeOID == pgtype.ByteaOID && fields[1].DataTypeOID == pgtype.ByteaOID
+	ready := len(fields) == 13 && fields[0].DataTypeOID == pgtype.ByteaOID && fields[1].DataTypeOID == pgtype.ByteaOID && fields[9].DataTypeOID == pgtype.BoolOID && fields[10].DataTypeOID == pgtype.TextOID && fields[11].DataTypeOID == pgtype.TimestamptzOID && fields[12].DataTypeOID == pgtype.BoolOID
 	executions.Close()
 	if !ready || executions.Err() != nil {
 		return notReady

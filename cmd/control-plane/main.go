@@ -33,9 +33,10 @@ func run(arguments []string) error {
 	certFile := flags.String("tls-cert", "", "PEM server certificate")
 	keyFile := flags.String("tls-key", "", "PEM server private key")
 	leaseDuration := flags.Duration("lease-duration", 2*time.Minute, "duration granted to one Execution")
+	recoveryWindow := flags.Duration("recovery-window", 30*time.Second, "bounded same-Worker recovery window after a missed lease heartbeat")
 	if err := flags.Parse(arguments); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
-			fmt.Fprintln(os.Stdout, "Usage: control-plane --tls-cert CERT --tls-key KEY [--listen=127.0.0.1:8443] [--lease-duration=2m]")
+			fmt.Fprintln(os.Stdout, "Usage: control-plane --tls-cert CERT --tls-key KEY [--listen=127.0.0.1:8443] [--lease-duration=2m] [--recovery-window=30s]")
 			return nil
 		}
 		return errors.New("invalid Control Plane options (use --help)")
@@ -62,7 +63,7 @@ func run(arguments []string) error {
 	if err != nil {
 		return errors.New("cannot load Control Plane TLS certificate and private key")
 	}
-	store, err := executionqueue.NewStore(os.Getenv("AGENT_DATABASE_URL"), *leaseDuration)
+	store, err := executionqueue.NewStoreWithRecovery(os.Getenv("AGENT_DATABASE_URL"), *leaseDuration, *recoveryWindow)
 	if err != nil {
 		return err
 	}
@@ -74,6 +75,13 @@ func run(arguments []string) error {
 	if err != nil {
 		return err
 	}
+	sweepCtx, cancelSweep := context.WithCancel(ctx)
+	sweepDone := make(chan struct{})
+	go func() {
+		defer close(sweepDone)
+		sweepRecovery(sweepCtx, store, min(time.Second, *leaseDuration/4))
+	}()
+	defer func() { cancelSweep(); <-sweepDone }()
 	listener, err := net.Listen("tcp", *listen)
 	if err != nil {
 		return errors.New("cannot bind loopback Worker API listener")
@@ -108,5 +116,28 @@ func run(arguments []string) error {
 			return errors.New("Worker API HTTPS listener failed during shutdown")
 		}
 		return nil
+	}
+}
+
+// Recovery must converge even when no Worker or Operator is polling a record.
+// A database outage keeps the original deadlines and retries without log spam.
+func sweepRecovery(ctx context.Context, store *executionqueue.Store, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	reportedFailure := false
+	for {
+		err := store.SweepRecovery(ctx)
+		if ctx.Err() != nil {
+			return
+		}
+		if err != nil && !reportedFailure {
+			fmt.Fprintln(os.Stderr, "Control Plane recovery sweep failed; retrying with the original deadlines")
+		}
+		reportedFailure = err != nil
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
 	}
 }

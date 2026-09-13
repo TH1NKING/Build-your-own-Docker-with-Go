@@ -37,6 +37,7 @@ func run(arguments []string) error {
 	flags.StringVar(&caFile, "ca-file", "", "optional PEM private certificate authority added to system trust")
 	flags.StringVar(&config.SupervisorSocket, "supervisor-socket", "", "absolute path to the restricted local Supervisor socket")
 	flags.StringVar(&config.ProfileIdentity, "profile-identity", "", "operator-approved installed Profile Bundle sha256 identity")
+	flags.IntVar(&config.Capacity, "capacity", 2, "maximum concurrent Sandboxes on this Worker (1-64)")
 	flags.DurationVar(&config.PollWait, "poll-wait", 20*time.Second, "HTTPS long-poll duration (at most 25s)")
 	flags.DurationVar(&config.RetryInterval, "retry-interval", 250*time.Millisecond, "delay between result-report or long-poll retries")
 	flags.DurationVar(&config.ReportTimeout, "report-timeout", 30*time.Second, "maximum time to acknowledge one immutable Execution Result")

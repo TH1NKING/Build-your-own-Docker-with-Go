@@ -21,7 +21,7 @@ import (
 	"github.com/TH1NKING/Build-your-own-Docker-with-Go/internal/workercredential"
 )
 
-func workerQueueFixture(t *testing.T, duration time.Duration) (*executionqueue.Store, *workercredential.Store) {
+func workerQueueFixture(t *testing.T, duration time.Duration, recoveryWindow ...time.Duration) (*executionqueue.Store, *workercredential.Store) {
 	t.Helper()
 	databaseURL := migrationDatabase(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -30,6 +30,9 @@ func workerQueueFixture(t *testing.T, duration time.Duration) (*executionqueue.S
 		t.Fatal(err)
 	}
 	queue, err := executionqueue.NewStore(databaseURL, duration)
+	if len(recoveryWindow) != 0 {
+		queue, err = executionqueue.NewStoreWithRecovery(databaseURL, duration, recoveryWindow[0])
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +75,7 @@ func TestWorkerAPIRejectsForeignStaleAndExpiredLeases(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if record.State == "lease_expired" {
+		if record.State == "recovering" {
 			break
 		}
 		select {

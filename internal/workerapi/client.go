@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -77,6 +78,67 @@ func (c *Client) Validate(ctx context.Context, lease Lease) error {
 	_, err := c.post(ctx, "/worker/v1/validate", leaseReference{lease.ExecutionID, lease.Generation}, nil)
 	return err
 }
+func (c *Client) Release(ctx context.Context, lease Lease) error {
+	_, err := c.post(ctx, "/worker/v1/release", leaseReference{lease.ExecutionID, lease.Generation}, nil)
+	return err
+}
+func (c *Client) Capacity(ctx context.Context) (Capacity, error) {
+	var capacity Capacity
+	status, err := c.post(ctx, "/worker/v1/capacity", capacityRequest{}, &capacity)
+	if err != nil {
+		return Capacity{}, err
+	}
+	if status != http.StatusOK || capacity.WorkerID == "" || capacity.Configured < 1 || capacity.Configured > 64 || capacity.Occupied < 0 || capacity.Available != max(0, capacity.Configured-capacity.Occupied) {
+		return Capacity{}, errors.New("Worker API returned invalid Sandbox capacity")
+	}
+	return capacity, nil
+}
+func (c *Client) ConfigureCapacity(ctx context.Context, capacity int) error {
+	_, err := c.post(ctx, "/worker/v1/configure-capacity", configureCapacityRequest{Capacity: capacity}, nil)
+	return err
+}
+func (c *Client) BindSandbox(ctx context.Context, lease Lease, sandboxID string) error {
+	_, err := c.post(ctx, "/worker/v1/bind-sandbox", sandboxReference{lease.ExecutionID, lease.Generation, sandboxID}, nil)
+	return err
+}
+func (c *Client) Outstanding(ctx context.Context) ([]OutstandingExecution, error) {
+	var entries []OutstandingExecution
+	status, err := c.post(ctx, "/worker/v1/outstanding", capacityRequest{}, &entries)
+	if err != nil {
+		return nil, err
+	}
+	if status != http.StatusOK || entries == nil || len(entries) > 64 {
+		return nil, errors.New("Worker API returned invalid outstanding Executions")
+	}
+	for _, entry := range entries {
+		if entry.Lease.ExecutionID == "" || entry.Lease.AgentRunID == "" || entry.Lease.Generation <= 0 || entry.Lease.ExpiresAt.IsZero() || entry.Lease.Source != "" || entry.Lease.Stdin != "" || len(entry.Lease.OutputPaths) != 0 {
+			return nil, errors.New("Worker API returned invalid outstanding identity")
+		}
+		switch entry.State {
+		case "leased", "recovering", "worker_lost", "completed":
+		default:
+			return nil, errors.New("Worker API returned invalid outstanding state")
+		}
+	}
+	return entries, nil
+}
+func (c *Client) Heartbeat(ctx context.Context, lease Lease, sandboxID string) (Authority, error) {
+	return c.authority(ctx, "/worker/v1/heartbeat", lease, sandboxID)
+}
+func (c *Client) Recover(ctx context.Context, lease Lease, sandboxID string) (Authority, error) {
+	return c.authority(ctx, "/worker/v1/recover", lease, sandboxID)
+}
+func (c *Client) authority(ctx context.Context, route string, lease Lease, sandboxID string) (Authority, error) {
+	var authority Authority
+	status, err := c.post(ctx, route, sandboxReference{lease.ExecutionID, lease.Generation, sandboxID}, &authority)
+	if err != nil {
+		return Authority{}, err
+	}
+	if status != http.StatusOK || authority.Lease.ExecutionID != lease.ExecutionID || authority.Lease.AgentRunID == "" || authority.Lease.Generation != lease.Generation || authority.ServerTime.IsZero() || !authority.RecoveryUntil.After(authority.Lease.ExpiresAt) || (authority.State != "leased" && authority.State != "completed") || (authority.State == "leased" && !authority.Lease.ExpiresAt.After(authority.ServerTime)) {
+		return Authority{}, errors.New("Worker API returned invalid Execution authority")
+	}
+	return authority, nil
+}
 func (c *Client) Complete(ctx context.Context, lease Lease, result sandboxsupervisor.ExecutePythonResult) error {
 	_, err := c.post(ctx, "/worker/v1/complete", completeRequest{lease.ExecutionID, lease.Generation, result}, nil)
 	return err
@@ -115,9 +177,30 @@ func (c *Client) post(ctx context.Context, route string, value, target any) (int
 		return 0, errors.New("Worker API returned an unexpected acknowledgement status")
 	}
 	if target != nil {
-		decoder := json.NewDecoder(io.LimitReader(response.Body, 64<<10))
+		// Read one byte beyond the public envelope limit before decoding. A
+		// LimitReader's synthetic EOF must never turn an oversized response
+		// into a retryable truncated transport response.
+		const maximumResponseBytes = 64 << 10
+		body, readErr := io.ReadAll(io.LimitReader(response.Body, maximumResponseBytes+1))
+		if ctx.Err() != nil {
+			return 0, ctx.Err()
+		}
+		if len(body) > maximumResponseBytes {
+			return 0, errors.New("Worker API response exceeded its envelope limit")
+		}
+		if readErr != nil {
+			var networkError net.Error
+			if errors.Is(readErr, io.EOF) || errors.Is(readErr, io.ErrUnexpectedEOF) || errors.As(readErr, &networkError) {
+				return 0, ErrTransport
+			}
+			return 0, errors.New("cannot read Worker API response")
+		}
+		decoder := json.NewDecoder(bytes.NewReader(body))
 		decoder.DisallowUnknownFields()
-		if decoder.Decode(target) != nil {
+		if err := decoder.Decode(target); err != nil {
+			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+				return 0, ErrTransport
+			}
 			return 0, errors.New("invalid Worker API response")
 		}
 		var extra any

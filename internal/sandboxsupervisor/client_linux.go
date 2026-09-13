@@ -13,6 +13,12 @@ type Client struct{ socketPath string }
 
 func NewClient(socketPath string) *Client { return &Client{socketPath: socketPath} }
 
+func (client *Client) InspectSandbox(ctx context.Context, request InspectSandboxRequest) (InspectSandboxResponse, error) {
+	var response InspectSandboxResponse
+	err := client.exchange(ctx, request.RequestID, OperationInspectSandbox, inspectSandboxParameters{SandboxID: request.SandboxID}, &response)
+	return response, err
+}
+
 func (client *Client) GetExecutionResult(ctx context.Context, request GetExecutionResultRequest) (GetExecutionResultResponse, error) {
 	var response GetExecutionResultResponse
 	err := client.exchange(ctx, request.RequestID, OperationGetExecutionResult, executionResultReference{

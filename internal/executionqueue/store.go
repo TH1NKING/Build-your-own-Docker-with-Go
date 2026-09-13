@@ -16,21 +16,29 @@ import (
 )
 
 type Store struct {
-	databaseURL   string
-	leaseDuration time.Duration
+	databaseURL    string
+	leaseDuration  time.Duration
+	recoveryWindow time.Duration
 }
 
 func NewStore(databaseURL string, leaseDuration time.Duration) (*Store, error) {
+	return NewStoreWithRecovery(databaseURL, leaseDuration, 30*time.Second)
+}
+
+func NewStoreWithRecovery(databaseURL string, leaseDuration, recoveryWindow time.Duration) (*Store, error) {
 	if leaseDuration == 0 {
 		leaseDuration = 2 * time.Minute
 	}
 	if leaseDuration < 100*time.Millisecond || leaseDuration > time.Hour {
 		return nil, errors.New("lease duration must be between 100ms and 1h")
 	}
+	if recoveryWindow < 100*time.Millisecond || recoveryWindow > time.Hour {
+		return nil, errors.New("recovery window must be between 100ms and 1h")
+	}
 	if _, err := pgx.ParseConfig(databaseURL); err != nil || databaseURL == "" {
 		return nil, errors.New("invalid Control Plane database configuration")
 	}
-	return &Store{databaseURL: databaseURL, leaseDuration: leaseDuration}, nil
+	return &Store{databaseURL: databaseURL, leaseDuration: leaseDuration, recoveryWindow: recoveryWindow}, nil
 }
 
 func (s *Store) connect(ctx context.Context) (*pgx.Conn, error) {
@@ -123,6 +131,15 @@ func (s *Store) Claim(ctx context.Context, token string) (*Lease, error) {
 	if err != nil {
 		return nil, err
 	}
+	// The Worker row is locked by authentication. Every claimant for this
+	// identity therefore observes capacity after earlier claims have committed.
+	var capacity, occupied int
+	if err := tx.QueryRow(ctx, `SELECT sandbox_capacity,(SELECT count(*) FROM control_plane.executions WHERE worker_id=$1 AND NOT capacity_released) FROM control_plane.worker_nodes WHERE id=$1`, worker.ID).Scan(&capacity, &occupied); err != nil {
+		return nil, databaseError(ctx)
+	}
+	if occupied >= capacity {
+		return nil, nil
+	}
 	var id string
 	err = tx.QueryRow(ctx, `SELECT id FROM control_plane.executions WHERE state='queued' ORDER BY queued_order FOR UPDATE SKIP LOCKED LIMIT 1`).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -133,7 +150,7 @@ func (s *Store) Claim(ctx context.Context, token string) (*Lease, error) {
 	}
 	var raw []byte
 	var lease Lease
-	err = tx.QueryRow(ctx, `UPDATE control_plane.executions SET state='leased',worker_id=$2,generation=generation+1,lease_expires_at=clock_timestamp()+$3::bigint*interval '1 millisecond' WHERE id=$1 AND state='queued' AND $4::timestamptz>clock_timestamp() RETURNING workload,generation,lease_expires_at`, id, worker.ID, s.leaseDuration.Milliseconds(), worker.ExpiresAt).Scan(&raw, &lease.Generation, &lease.ExpiresAt)
+	err = tx.QueryRow(ctx, `UPDATE control_plane.executions SET state='leased',worker_id=$2,generation=generation+1,lease_expires_at=clock_timestamp()+$3::bigint*interval '1 millisecond',recovery_until=clock_timestamp()+$5::bigint*interval '1 millisecond' WHERE id=$1 AND state='queued' AND $4::timestamptz>clock_timestamp() RETURNING workload,generation,lease_expires_at`, id, worker.ID, s.leaseDuration.Milliseconds(), worker.ExpiresAt, (s.leaseDuration+s.recoveryWindow).Milliseconds()).Scan(&raw, &lease.Generation, &lease.ExpiresAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, workercredential.ErrUnauthenticated
 	}
@@ -155,8 +172,8 @@ func (s *Store) Claim(ctx context.Context, token string) (*Lease, error) {
 	return &lease, nil
 }
 
-// Get exposes immutable domain outcomes to the trusted Control Plane. Expiry
-// is visible but never requeues uncertain work; T31 owns recovery transitions.
+// Get exposes domain outcomes to the trusted Control Plane. Database deadlines
+// remain observable while the background recovery sweep is catching up.
 func (s *Store) Get(ctx context.Context, id string) (Record, error) {
 	var r Record
 	conn, err := s.connect(ctx)
@@ -165,7 +182,7 @@ func (s *Store) Get(ctx context.Context, id string) (Record, error) {
 	}
 	defer closeConnection(conn)
 	var workload, result []byte
-	err = conn.QueryRow(ctx, `SELECT workload,CASE WHEN state='leased' AND lease_expires_at<=clock_timestamp() THEN 'lease_expired' ELSE state END,COALESCE(worker_id,''),generation,lease_expires_at,result FROM control_plane.executions WHERE id=$1`, id).Scan(&workload, &r.State, &r.WorkerID, &r.Generation, &r.ExpiresAt, &result)
+	err = conn.QueryRow(ctx, `SELECT workload,CASE WHEN state IN ('leased','recovering') AND recovery_until<=clock_timestamp() THEN 'worker_lost' WHEN state='leased' AND lease_expires_at<=clock_timestamp() THEN 'recovering' ELSE state END,COALESCE(worker_id,''),generation,lease_expires_at,result,recovery_until,sandbox_id,cleanup_unknown FROM control_plane.executions WHERE id=$1`, id).Scan(&workload, &r.State, &r.WorkerID, &r.Generation, &r.ExpiresAt, &result, &r.RecoveryUntil, &r.SandboxID, &r.CleanupUnknown)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return r, ErrNotFound
 	}
