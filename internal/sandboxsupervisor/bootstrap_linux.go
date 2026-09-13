@@ -11,17 +11,19 @@ import (
 )
 
 // RunBootstrap is the private re-exec entry point of sandboxd. It accepts no
-// paths or commands: the Supervisor supplies already-open handles and storage policy.
-func RunBootstrap(storagePolicy string) error {
+// paths or commands: the Supervisor supplies already-open handles, storage
+// policy, and the validated names of selected Attachments.
+func RunBootstrap(encodedPolicy string) error {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	if os.Getpid() != 1 || os.Geteuid() != 0 {
 		return errors.New("Sandbox bootstrap requires namespace PID 1 and internal UID zero")
 	}
-	var storage StorageBudget
-	if err := decodeStrictJSON([]byte(storagePolicy), &storage, "workspace_bytes", "workspace_files", "temporary_bytes", "temporary_files"); err != nil {
-		return fmt.Errorf("decode Sandbox storage policy: %w", err)
+	var policy bootstrapPolicy
+	if err := decodeStrictJSON([]byte(encodedPolicy), &policy, "storage", "attachment_names"); err != nil {
+		return fmt.Errorf("decode Sandbox bootstrap policy: %w", err)
 	}
+	storage := policy.Storage
 	if err := storage.validate(); err != nil {
 		return err
 	}
@@ -50,8 +52,14 @@ func RunBootstrap(storagePolicy string) error {
 	if err != nil || !os.SameFile(cwd, selected) {
 		return errors.New("bootstrap cwd is not the selected Profile")
 	}
-	// Build the mountpoint in this namespace. No host directory is made
-	// writable or traversable by subordinate IDs, including 0700 ancestors.
+	attachments, err := reopenBootstrapAttachments(policy.AttachmentNames)
+	if err != nil {
+		return err
+	}
+	defer closeAttachments(attachments)
+	// Build the mountpoint in this namespace without changing host directory
+	// permissions. The inherited Profile cwd supports protected ancestors;
+	// selected Attachment sources must already permit subordinate-ID traversal.
 	temporary, err := os.Lstat("/tmp")
 	if err != nil || !temporary.IsDir() || temporary.Mode()&os.ModeSymlink != 0 {
 		return errors.New("bootstrap requires a real /tmp directory")
@@ -77,12 +85,41 @@ func RunBootstrap(storagePolicy string) error {
 	if err := syscall.Mount("", newRoot, "", flags, ""); err != nil {
 		return fmt.Errorf("make Profile mount read-only: %w", err)
 	}
+	// Build the Workspace while the old /proc can still resolve the selected
+	// namespace-local Attachment handles. All these mounts belong only to this
+	// Sandbox; they disappear when Init and its mount namespace are destroyed.
+	// Workspace root, input slot and output reserve three trusted inodes. The
+	// separate input tmpfs does not spend Workload storage/file allowances.
+	if err := syscall.Mount("tmpfs", newRoot+"/workspace", "tmpfs", syscall.MS_NOSUID|syscall.MS_NODEV|syscall.MS_NOEXEC, fmt.Sprintf("size=%d,nr_inodes=%d,mode=0755", storage.WorkspaceBytes, storage.WorkspaceFiles+3)); err != nil {
+		return fmt.Errorf("mount Sandbox Workspace: %w", err)
+	}
+	if err := os.Mkdir(newRoot+"/workspace/input", 0o555); err != nil {
+		return err
+	}
+	if err := os.Mkdir(newRoot+"/workspace/output", 0o700); err != nil {
+		return err
+	}
+	if err := os.Chown(newRoot+"/workspace/output", 1000, 1000); err != nil {
+		return err
+	}
+	if err := mountSandboxAttachments(newRoot+"/workspace/input", attachments); err != nil {
+		return err
+	}
+	if err := syscall.Mount("tmpfs", newRoot+"/tmp", "tmpfs", syscall.MS_NOSUID|syscall.MS_NODEV|syscall.MS_NOEXEC, fmt.Sprintf("size=%d,nr_inodes=%d,mode=0700,uid=1000,gid=1000", storage.TemporaryBytes, storage.TemporaryFiles+1)); err != nil {
+		return fmt.Errorf("mount Sandbox temporary storage: %w", err)
+	}
+	if err := prepareSandboxDevices(newRoot); err != nil {
+		return err
+	}
 	// User-namespace proc mounts need an existing fully visible proc instance.
 	// Mount the new PID namespace's proc before detaching the inherited root;
 	// afterwards the old proc is gone and kernels enforcing that check deny it.
 	// This is a fresh proc mount, never a bind of the host's process view.
-	if err := syscall.Mount("proc", newRoot+"/proc", "proc", syscall.MS_NOSUID|syscall.MS_NODEV|syscall.MS_NOEXEC, ""); err != nil {
+	if err := syscall.Mount("proc", newRoot+"/proc", "proc", syscall.MS_RDONLY|syscall.MS_NOSUID|syscall.MS_NODEV|syscall.MS_NOEXEC, ""); err != nil {
 		return fmt.Errorf("mount namespace-local process information: %w", err)
+	}
+	if err := restrictSandboxProc(newRoot); err != nil {
+		return err
 	}
 	if err := syscall.Chdir(newRoot); err != nil {
 		return fmt.Errorf("enter Profile mount: %w", err)
@@ -100,27 +137,6 @@ func RunBootstrap(storagePolicy string) error {
 	}
 	if err := profile.Close(); err != nil {
 		return err
-	}
-	// These empty mountpoints are reserved and materialized by the installer.
-	// Their contents exist only in this Sandbox's private mount namespace.
-	// Root, input and output consume three trusted inodes. Everything created
-	// by a Workload, including directories and links, uses the remaining slots.
-	if err := syscall.Mount("tmpfs", "/workspace", "tmpfs", syscall.MS_NOSUID|syscall.MS_NODEV|syscall.MS_NOEXEC, fmt.Sprintf("size=%d,nr_inodes=%d,mode=0755", storage.WorkspaceBytes, storage.WorkspaceFiles+3)); err != nil {
-		return fmt.Errorf("mount Sandbox Workspace: %w", err)
-	}
-	// Reserve an immutable input slot. Authorized Attachment mounts are added
-	// by their own feature; Workloads cannot write, replace or chmod this slot.
-	if err := os.Mkdir("/workspace/input", 0o555); err != nil {
-		return err
-	}
-	if err := os.Mkdir("/workspace/output", 0o700); err != nil {
-		return err
-	}
-	if err := os.Chown("/workspace/output", 1000, 1000); err != nil {
-		return err
-	}
-	if err := syscall.Mount("tmpfs", "/tmp", "tmpfs", syscall.MS_NOSUID|syscall.MS_NODEV|syscall.MS_NOEXEC, fmt.Sprintf("size=%d,nr_inodes=%d,mode=0700,uid=1000,gid=1000", storage.TemporaryBytes, storage.TemporaryFiles+1)); err != nil {
-		return fmt.Errorf("mount Sandbox temporary storage: %w", err)
 	}
 	// exec preserves namespace PID 1 while replacing the bootstrap with the
 	// independently digest-verified Profile Bundle Init. It signals readiness.

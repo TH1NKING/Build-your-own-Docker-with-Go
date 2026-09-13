@@ -33,6 +33,7 @@ func run(arguments []string) error {
 	flags.StringVar(&config.SocketPath, "socket", "", "absolute path for the restricted Worker socket")
 	flags.StringVar(&config.ProfileStore, "profile-store", "", "absolute path to the root-owned Profile store")
 	flags.StringVar(&config.SandboxRoot, "sandbox-root", "", "absolute path to the runtime-owned Sandbox root")
+	flags.StringVar(&config.AttachmentRoot, "attachment-root", "", "optional absolute path to a trusted, searchable directory of immutable staged Attachments; empty disables inputs")
 	flags.StringVar(&config.CgroupRoot, "cgroup-root", "/sys/fs/cgroup", "root-owned cgroup v2 directory with CPU, memory and PID controllers delegated for Sandboxes")
 	flags.Int64Var(&config.ResourceBudget.CPUMillis, "cpu-millis", config.ResourceBudget.CPUMillis, "Sandbox CPU quota in thousandths of a core")
 	flags.Int64Var(&config.ResourceBudget.MemoryBytes, "memory-bytes", config.ResourceBudget.MemoryBytes, "Sandbox memory budget in bytes")

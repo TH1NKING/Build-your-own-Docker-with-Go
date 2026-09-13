@@ -132,6 +132,14 @@ type CreateSandboxRequest struct {
 	RequestID       string
 	SandboxID       string
 	ProfileIdentity string
+	Attachments     []AttachmentInput
+}
+
+// AttachmentInput refers to a file already authorized and staged by a trusted
+// component. It never grants the Worker access to an arbitrary host path.
+type AttachmentInput struct {
+	StagingID string `json:"staging_id"`
+	Name      string `json:"name"`
 }
 
 type CreateSandboxResponse struct {

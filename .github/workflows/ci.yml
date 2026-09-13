@@ -111,9 +111,20 @@ jobs:
             -test.v \
             -test.run='^(TestProfileBundleInstall|TestPythonDataV1Production)'
 
-      - name: Verify Python Executions, System Call Policy, lifecycle, and Resource Budgets
+      - name: Verify T15 Sandbox security acceptance with no skipped tests
         shell: bash
-        run: PROFILE_BUNDLE_SOURCE_CACHE="$RUNNER_TEMP/profile-sources" bash tests/run-sandbox-init-linux.sh
+        run: |
+          PROFILE_BUNDLE_SOURCE_CACHE="$RUNNER_TEMP/profile-sources" \
+            SANDBOX_ACCEPTANCE_LOG_DIR="$RUNNER_TEMP/sandbox-acceptance" \
+            bash tests/run-sandbox-acceptance-linux.sh
+
+      - name: Retain Sandbox acceptance logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sandbox-security-acceptance
+          path: ${{ runner.temp }}/sandbox-acceptance
+          if-no-files-found: ignore
 
   sandbox-creation:
     name: Sandbox creation (real Linux kernel)

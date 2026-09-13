@@ -79,7 +79,13 @@ T11 将 stdout、stderr 的默认捕获额度分别设为 1 MiB，支持可信�
 
 T10 将 Workspace 与 `/tmp` 的存储预算纳入可信启动配置：默认分别为 512 MiB / 5,000 个文件名额和 16 MiB / 1,023 个文件名额。独立 tmpfs 在执行中拒绝超额分配，目录、链接和仍打开的已删除文件继续占用相应额度；状态和占用跨 Execution 保留，释放后可复用。字节预算计算实际分配的数据页，T14 另行限制输出提取的逻辑长度。配置、内核计费、与 cgroup OOM 的区别、方案取舍及实验见 [`T10 学习笔记`](docs/learning/t10-storage-budgets.md)。
 
-T14 为 `execute_python` 增加 `output_paths`：只提取显式声明、位于 `/workspace/output` 内的稳定普通文件。提取在后代终止并回收后进行，通过目录描述符逐段解析，拒绝路径穿越、符号链接、硬链接、特殊文件、跨文件系统访问和已观察到的替换或内容变化；任一文件不合格时整批不返回。默认限制单文件 20 MiB、每次 Execution 32 MiB、每个 Sandbox 累计 100 MiB，以及每次 16 个声明文件。结果包含字节快照、大小与 SHA-256，未声明文件继续留在 Workspace；重复读取已完成结果不重新执行或读文件。接口、预算与暂存生命周期见 [`Supervisor 协议`](docs/sandbox-supervisor-protocol-v1.md)，实现取舍和验证记录见 [`T14 学习笔记`](docs/learning/t14-declared-output-extraction.md)。当前没有 Artifact Store、OSS 上传或文件下载界面，T07、T13、T15 等合同仍未完成，不能据此用于任意不可信 Workload。
+T14 为 `execute_python` 增加 `output_paths`：只提取显式声明、位于 `/workspace/output` 内的稳定普通文件。提取在后代终止并回收后进行，通过目录描述符逐段解析，拒绝路径穿越、符号链接、硬链接、特殊文件、跨文件系统访问和已观察到的替换或内容变化；任一文件不合格时整批不返回。默认限制单文件 20 MiB、每次 Execution 32 MiB、每个 Sandbox 累计 100 MiB，以及每次 16 个声明文件。结果包含字节快照、大小与 SHA-256，未声明文件继续留在 Workspace；重复读取已完成结果不重新执行或读文件。接口、预算与暂存生命周期见 [`Supervisor 协议`](docs/sandbox-supervisor-protocol-v1.md)，实现取舍和验证记录见 [`T14 学习笔记`](docs/learning/t14-declared-output-extraction.md)。
+
+T13 增加创建时固定的只读附件输入：可信启动参数 `--attachment-root` 指定暂存区，请求只传 `staging_id` 和沙箱内文件名。Supervisor 拒绝路径穿越、链接、特殊文件、可写或错误所有者的来源，并限制最多 16 份、单份 20 MiB、合计 100 MiB。每个输入和整个 input 目录都挂载为只读，附件 FD 在进入 Init 前关闭；坏输入在创建前拒绝，创建中失败沿用完整清理和可重试合同。当前暂存文件需由可信组件准备，Conversation 授权与文件上传仍由后续 ticket 实现。
+
+T07 增加只含 `/dev/null`、`/dev/zero` 的定额只读设备视图，并将独立 `/proc` 设为只读、遮蔽固定敏感条目。真实 Linux 验收检查宿主文件和 socket 不会被继承，以及独立于 seccomp 的入站、出站网络隔离。设计、替代方案、暂存区权限和旧 Profile 升级要求见 [`T13/T07 学习笔记`](docs/learning/t13-t07-sandbox-boundary.md)。这仍是共享 Linux 内核的受约束沙箱，不代表完整 Agent 平台或任意攻击条件下的安全保证。
+
+T15 的 `make test-sandbox-acceptance` 将完整 Execution/Lifecycle 与创建验收组合执行，保留独立日志，任一失败、跳过或零测试都拒绝通过。设置 `PROFILE_BUNDLE_SOURCE_CACHE` 后也可直接运行 `bash tests/run-sandbox-acceptance-linux.sh`。覆盖矩阵与内核实测记录见 [`T15 联合验收`](docs/learning/t15-kernel-acceptance.md)。另有 [`三组文件演示`](docs/learning/sandbox-file-demo.md)：正常 CSV 处理、六种输入修改拒绝、恶意来源拒绝，均可通过脚本重复执行。
 
 ## 使用 Go Runtime Lab
 

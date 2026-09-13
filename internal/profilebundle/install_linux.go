@@ -725,7 +725,7 @@ func extractRootFS(stageRoot *os.Root, entrypoint string) error {
 	if err := writeInstalledBytes(root, "system-call-policy.json", policyBytes, 0o444); err != nil {
 		return fmt.Errorf("materialize verified System Call Policy in installed root: %w", err)
 	}
-	for _, name := range []string{"proc", "workspace", "tmp"} {
+	for _, name := range []string{"proc", "dev", "workspace", "tmp"} {
 		if err := root.Mkdir(name, 0o700); err != nil {
 			return fmt.Errorf("create reserved Sandbox mountpoint %q: %w", name, err)
 		}

@@ -19,6 +19,7 @@ type ServerConfig struct {
 	SocketPath     string
 	ProfileStore   string
 	SandboxRoot    string
+	AttachmentRoot string
 	SubUIDStart    uint
 	SubGIDStart    uint
 	SubIDCount     uint
@@ -34,8 +35,9 @@ type requestEnvelope struct {
 }
 
 type createSandboxParameters struct {
-	SandboxID       string `json:"sandbox_id"`
-	ProfileIdentity string `json:"profile_identity"`
+	SandboxID       string            `json:"sandbox_id"`
+	ProfileIdentity string            `json:"profile_identity"`
+	Attachments     []AttachmentInput `json:"attachments,omitempty"`
 }
 
 type responseEnvelope struct {
@@ -46,9 +48,10 @@ type responseEnvelope struct {
 }
 
 type server struct {
-	profileStore  *os.Root
-	creator       *sandboxCreator
-	responseSlots chan struct{}
+	profileStore   *os.Root
+	attachmentRoot *os.Root
+	creator        *sandboxCreator
+	responseSlots  chan struct{}
 }
 
 const maximumConcurrentControlConnections = 16
@@ -78,6 +81,14 @@ func Serve(ctx context.Context, config ServerConfig) error {
 		return err
 	}
 	defer sandboxRoot.Close()
+	var attachmentRoot *os.Root
+	if config.AttachmentRoot != "" {
+		attachmentRoot, err = openAttachmentRoot(config.AttachmentRoot)
+		if err != nil {
+			return err
+		}
+		defer attachmentRoot.Close()
+	}
 	creator := newSandboxCreator(ctx, config, sandboxRoot)
 	defer creator.close()
 
@@ -101,7 +112,7 @@ func Serve(ctx context.Context, config ServerConfig) error {
 		}
 	}()
 
-	service := &server{profileStore: profileStore, creator: creator, responseSlots: make(chan struct{}, 2)}
+	service := &server{profileStore: profileStore, attachmentRoot: attachmentRoot, creator: creator, responseSlots: make(chan struct{}, 2)}
 	connectionSlots := make(chan struct{}, maximumConcurrentControlConnections)
 	var handlers sync.WaitGroup
 	defer func() {
@@ -188,12 +199,17 @@ func (service *server) responseForRequest(operation *controlOperation, request r
 
 func (service *server) createSandboxResponse(operation *controlOperation, requestID string, rawParameters json.RawMessage) responseEnvelope {
 	var parameters createSandboxParameters
-	if err := decodeStrictJSON(rawParameters, &parameters, "sandbox_id", "profile_identity"); err != nil || parameters.SandboxID == "" || parameters.ProfileIdentity == "" {
+	if err := decodeStrictJSON(rawParameters, &parameters, "sandbox_id", "profile_identity", "attachments"); err != nil || parameters.SandboxID == "" || parameters.ProfileIdentity == "" {
 		return protocolErrorResponse(requestID, ErrorCodeMalformedRequest)
 	}
 	if !validOpaqueIdentifier(parameters.SandboxID) {
 		return protocolErrorResponse(requestID, ErrorCodeInvalidReference)
 	}
+	attachments, code := resolveAttachments(service.attachmentRoot, parameters.Attachments)
+	if code != "" {
+		return protocolErrorResponse(requestID, code)
+	}
+	defer closeAttachments(attachments)
 	digest, ok := profileDigest(parameters.ProfileIdentity)
 	if !ok {
 		return protocolErrorResponse(requestID, ErrorCodeInvalidReference)
@@ -226,7 +242,7 @@ func (service *server) createSandboxResponse(operation *controlOperation, reques
 	if err := validateSandboxProfile(service.profileStore, digest, rootfs); err != nil {
 		return protocolErrorResponse(requestID, ErrorCodeInvalidReference)
 	}
-	if code := service.creator.create(operation, parameters.SandboxID, rootfs); code != "" {
+	if code := service.creator.create(operation, parameters.SandboxID, rootfs, attachments); code != "" {
 		return protocolErrorResponse(requestID, code)
 	}
 	return responseEnvelope{
