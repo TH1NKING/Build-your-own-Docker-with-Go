@@ -1,5 +1,7 @@
 # T22–T24：从本地沙箱到持久执行链路
 
+本文保留 T22–T24 完成时的设计与边界。后续 T27/T31 已增加容量控制与同 Worker 恢复，当前配置和故障语义请结合 [Worker API 合同](../worker-api-v1.md) 与 [T27/T31 学习笔记](t27-t31-worker-capacity-recovery.md) 阅读。
+
 我已经能通过本地 Supervisor 运行 Python。这一阶段补上 Worker 身份、数据库领取和结果上报，让执行面通过受限协议使用已有沙箱能力。这里完成的是单次 Execution 链路，完整 Agent Loop、容量调度、断连恢复和生产部署仍有后续 ticket。
 
 ## 沿着一次执行看代码

@@ -29,7 +29,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if r.URL.Path != "/worker/v1/claim" && r.URL.Path != "/worker/v1/validate" && r.URL.Path != "/worker/v1/complete" {
+	if r.URL.Path != "/worker/v1/claim" && r.URL.Path != "/worker/v1/validate" && r.URL.Path != "/worker/v1/complete" && r.URL.Path != "/worker/v1/release" && r.URL.Path != "/worker/v1/capacity" && r.URL.Path != "/worker/v1/configure-capacity" && r.URL.Path != "/worker/v1/bind-sandbox" && r.URL.Path != "/worker/v1/heartbeat" && r.URL.Path != "/worker/v1/recover" && r.URL.Path != "/worker/v1/outstanding" {
 		http.NotFound(w, r)
 		return
 	}
@@ -48,13 +48,91 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	if r.URL.Path == "/worker/v1/validate" {
+	if r.URL.Path == "/worker/v1/outstanding" {
+		var request capacityRequest
+		if !decode(w, r, &request, 1024) {
+			http.Error(w, "invalid outstanding request", http.StatusBadRequest)
+			return
+		}
+		entries, err := h.queue.Outstanding(ctx, token)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(entries)
+		return
+	}
+	if r.URL.Path == "/worker/v1/bind-sandbox" || r.URL.Path == "/worker/v1/heartbeat" || r.URL.Path == "/worker/v1/recover" {
+		var request sandboxReference
+		if !decode(w, r, &request, 1024) {
+			http.Error(w, "invalid Sandbox binding", http.StatusBadRequest)
+			return
+		}
+		if r.URL.Path == "/worker/v1/heartbeat" || r.URL.Path == "/worker/v1/recover" {
+			var authority executionqueue.Authority
+			var err error
+			if r.URL.Path == "/worker/v1/recover" {
+				authority, err = h.queue.Recover(ctx, token, request.ExecutionID, request.Generation, request.SandboxID)
+			} else {
+				authority, err = h.queue.Heartbeat(ctx, token, request.ExecutionID, request.Generation, request.SandboxID)
+			}
+			if err != nil {
+				writeError(w, err)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(authority)
+			return
+		}
+		if err := h.queue.BindSandbox(ctx, token, request.ExecutionID, request.Generation, request.SandboxID); err != nil {
+			writeError(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.URL.Path == "/worker/v1/capacity" {
+		var request capacityRequest
+		if !decode(w, r, &request, 1024) {
+			http.Error(w, "invalid capacity request", http.StatusBadRequest)
+			return
+		}
+		capacity, err := h.queue.Capacity(ctx, token)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(capacity)
+		return
+	}
+	if r.URL.Path == "/worker/v1/configure-capacity" {
+		var request configureCapacityRequest
+		if !decode(w, r, &request, 1024) {
+			http.Error(w, "invalid capacity configuration", http.StatusBadRequest)
+			return
+		}
+		if err := h.queue.ConfigureCapacity(ctx, token, request.Capacity); err != nil {
+			writeError(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.URL.Path == "/worker/v1/validate" || r.URL.Path == "/worker/v1/release" {
 		var request leaseReference
 		if !decode(w, r, &request, 1024) {
 			http.Error(w, "invalid lease reference", http.StatusBadRequest)
 			return
 		}
-		if err := h.queue.Validate(ctx, token, request.ExecutionID, request.Generation); err != nil {
+		var err error
+		if r.URL.Path == "/worker/v1/release" {
+			err = h.queue.Release(ctx, token, request.ExecutionID, request.Generation)
+		} else {
+			err = h.queue.Validate(ctx, token, request.ExecutionID, request.Generation)
+		}
+		if err != nil {
 			writeError(w, err)
 			return
 		}
@@ -125,6 +203,19 @@ func decode(w http.ResponseWriter, r *http.Request, value any, limit int64) bool
 	d.DisallowUnknownFields()
 	err := object(d, func(key string) error {
 		switch request := value.(type) {
+		case *sandboxReference:
+			switch key {
+			case "execution_id":
+				return d.Decode(&request.ExecutionID)
+			case "generation":
+				return d.Decode(&request.Generation)
+			case "sandbox_id":
+				return d.Decode(&request.SandboxID)
+			}
+		case *configureCapacityRequest:
+			if key == "capacity" {
+				return d.Decode(&request.Capacity)
+			}
 		case *claimRequest:
 			if key == "wait_ms" {
 				return d.Decode(&request.WaitMilliseconds)

@@ -11,19 +11,20 @@ import (
 	"os/signal"
 	"time"
 
+	"github.com/TH1NKING/Build-your-own-Docker-with-Go/internal/executionqueue"
 	"github.com/TH1NKING/Build-your-own-Docker-with-Go/internal/workercredential"
 )
 
 func runWorker(arguments []string) error {
 	if len(arguments) == 0 {
-		return errors.New("expected worker subcommand: provision, rotate, revoke, or list")
+		return errors.New("expected worker subcommand: provision, rotate, revoke, list, or confirm-legacy-cleanup")
 	}
 	if arguments[0] == "--help" || arguments[0] == "-h" {
 		printWorkerUsage()
 		return nil
 	}
 	operation := arguments[0]
-	if operation != "provision" && operation != "rotate" && operation != "revoke" && operation != "list" {
+	if operation != "provision" && operation != "rotate" && operation != "revoke" && operation != "list" && operation != "confirm-legacy-cleanup" {
 		return errors.New("unknown worker subcommand")
 	}
 	flags := flag.NewFlagSet("agentctl worker", flag.ContinueOnError)
@@ -66,6 +67,19 @@ func runWorker(arguments []string) error {
 	store := workercredential.NewStore(os.Getenv("AGENT_DATABASE_URL"))
 	var output any
 	switch operation {
+	case "confirm-legacy-cleanup":
+		queue, err := executionqueue.NewStore(os.Getenv("AGENT_DATABASE_URL"), 0)
+		if err != nil {
+			return err
+		}
+		confirmed, err := queue.ConfirmLegacyCleanup(ctx, *id)
+		if err != nil {
+			return err
+		}
+		output = struct {
+			ID        string `json:"id"`
+			Confirmed int64  `json:"confirmed"`
+		}{*id, confirmed}
 	case "provision", "rotate":
 		var issued workercredential.Issued
 		var err error
@@ -103,5 +117,7 @@ func printWorkerUsage() {
 	fmt.Fprintln(os.Stdout, "Usage: agentctl worker provision|rotate --id ID --expires-at RFC3339 [--timeout=1m]")
 	fmt.Fprintln(os.Stdout, "       agentctl worker revoke --id ID [--timeout=1m]")
 	fmt.Fprintln(os.Stdout, "       agentctl worker list [--timeout=1m]")
+	fmt.Fprintln(os.Stdout, "       agentctl worker confirm-legacy-cleanup --id ID [--timeout=1m]")
 	fmt.Fprintln(os.Stdout, "Provision and rotate print a raw credential once; save it in an owner-only Worker file.")
+	fmt.Fprintln(os.Stdout, "confirm-legacy-cleanup requires a revoked Worker and confirms that the operator has stopped the old Worker/Supervisor and cleaned all old Sandboxes. It only clears unknown legacy cleanup reservations; it does not stop or clean local resources.")
 }

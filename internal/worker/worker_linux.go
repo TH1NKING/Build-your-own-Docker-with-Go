@@ -1,6 +1,6 @@
 //go:build linux
 
-// Package worker runs one leased Execution at a time through the local Sandbox
+// Package worker runs bounded concurrent Executions through the local Sandbox
 // Supervisor. It never talks to PostgreSQL or retries a Workload execution.
 package worker
 
@@ -29,12 +29,16 @@ type Config struct {
 	RetryInterval    time.Duration
 	ReportTimeout    time.Duration
 	CleanupTimeout   time.Duration
+	Capacity         int
 }
 
 type Node struct {
 	config     Config
 	supervisor *sandboxsupervisor.Client
 	mu         sync.Mutex
+	slots      chan struct{}
+	unsafe     error
+	active     map[string]struct{}
 }
 
 func New(config Config) (*Node, error) {
@@ -55,15 +59,47 @@ func New(config Config) (*Node, error) {
 	if config.CleanupTimeout == 0 {
 		config.CleanupTimeout = 10 * time.Second
 	}
+	if config.Capacity == 0 {
+		config.Capacity = 2
+	}
+	if config.Capacity < 1 || config.Capacity > 64 {
+		return nil, errors.New("Worker Sandbox capacity must be between 1 and 64")
+	}
 	if config.PollWait < 0 || config.PollWait > 25*time.Second || config.RetryInterval < time.Millisecond || config.RetryInterval > time.Minute || config.ReportTimeout < time.Millisecond || config.ReportTimeout > 5*time.Minute || config.CleanupTimeout < time.Millisecond || config.CleanupTimeout > time.Minute {
 		return nil, errors.New("invalid bounded Worker polling, reporting or cleanup duration")
 	}
-	return &Node{config: config, supervisor: sandboxsupervisor.NewClient(config.SupervisorSocket)}, nil
+	return &Node{config: config, supervisor: sandboxsupervisor.NewClient(config.SupervisorSocket), slots: make(chan struct{}, config.Capacity), active: make(map[string]struct{})}, nil
 }
 
 // Run stops after any uncertain Execution or cleanup error. Only a failed
 // long-poll request may be retried here; RunOnce owns result-report retries.
 func (node *Node) Run(ctx context.Context) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	failures := make(chan error, node.config.Capacity)
+	var runners sync.WaitGroup
+	for range node.config.Capacity {
+		runners.Go(func() {
+			err := node.runSlot(ctx)
+			failures <- err
+			cancel()
+		})
+	}
+	runners.Wait()
+	close(failures)
+	var result error
+	for err := range failures {
+		if !errors.Is(err, context.Canceled) {
+			result = errors.Join(result, err)
+		}
+	}
+	if result != nil {
+		return result
+	}
+	return ctx.Err()
+}
+
+func (node *Node) runSlot(ctx context.Context) error {
 	for {
 		claimed, err := node.RunOnce(ctx)
 		if err != nil {
@@ -84,39 +120,61 @@ func (node *Node) Run(ctx context.Context) error {
 // RunOnce claims at most one Execution. The initial tracer uses a fresh Sandbox
 // per Agent Run; multi-Execution Sandbox residency belongs to the Agent Loop.
 func (node *Node) RunOnce(ctx context.Context) (claimed bool, returnedErr error) {
+	select {
+	case node.slots <- struct{}{}:
+		defer func() { <-node.slots }()
+	case <-ctx.Done():
+		return false, ctx.Err()
+	}
 	node.mu.Lock()
-	defer node.mu.Unlock()
+	unsafe := node.unsafe
+	node.mu.Unlock()
+	if unsafe != nil {
+		return false, unsafe
+	}
+	if err := node.reconcileTerminals(ctx); err != nil {
+		return false, err
+	}
+	if err := node.config.API.ConfigureCapacity(ctx, node.config.Capacity); err != nil {
+		return false, err
+	}
 	lease, err := node.config.API.Claim(ctx, node.config.PollWait)
 	if err != nil || lease == nil {
 		return false, err
 	}
 	claimed = true
+	node.mu.Lock()
+	node.active[lease.ExecutionID] = struct{}{}
+	node.mu.Unlock()
+	var sandboxID string
+	// A claimed slot remains occupied until local cleanup AND its durable
+	// acknowledgement succeed. A completed result alone never frees capacity.
+	defer func() {
+		cleanupErr := node.cleanup(*lease, sandboxID)
+		if cleanupErr != nil {
+			node.mu.Lock()
+			node.unsafe = cleanupErr
+			node.mu.Unlock()
+			returnedErr = errors.Join(returnedErr, cleanupErr)
+		}
+		node.mu.Lock()
+		delete(node.active, lease.ExecutionID)
+		node.mu.Unlock()
+	}()
 	if err := node.config.API.Validate(ctx, *lease); err != nil {
 		return true, err
-	}
-	if !time.Now().Before(lease.ExpiresAt) {
-		return true, errors.New("Execution Lease expired before Sandbox creation")
 	}
 	random := make([]byte, 16)
 	if _, err := rand.Read(random); err != nil {
 		return true, errors.New("generate private Sandbox identity")
 	}
-	sandboxID := "sandbox-" + hex.EncodeToString(random)
-	// Creation can succeed even if its response is lost. Cleanup therefore starts
-	// before sending CreateSandbox, and never depends on the cancelled lease.
-	defer func() {
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), node.config.CleanupTimeout)
-		defer cancel()
-		response, cleanupErr := node.supervisor.DestroySandbox(cleanupCtx, sandboxsupervisor.DestroySandboxRequest{RequestID: "destroy-" + sandboxID, SandboxID: sandboxID})
-		if cleanupErr == nil && response.Error != nil && response.Error.Code != sandboxsupervisor.ErrorCodeSandboxNotFound {
-			cleanupErr = fmt.Errorf("Supervisor cleanup rejected: %s", response.Error.Code)
-		}
-		if cleanupErr != nil {
-			returnedErr = errors.Join(returnedErr, fmt.Errorf("clean Worker Sandbox: %w", cleanupErr))
-		}
-	}()
-	leaseCtx, cancelLease := context.WithDeadline(ctx, lease.ExpiresAt)
-	defer cancelLease()
+	sandboxID = "sandbox-" + hex.EncodeToString(random)
+	monitor, err := node.maintainLease(ctx, *lease, sandboxID)
+	if err != nil {
+		return true, err
+	}
+	defer func() { returnedErr = errors.Join(returnedErr, monitor.stop()) }()
+	leaseCtx := monitor.ctx
 	created, err := node.supervisor.CreateSandbox(leaseCtx, sandboxsupervisor.CreateSandboxRequest{RequestID: "create-" + sandboxID, SandboxID: sandboxID, ProfileIdentity: node.config.ProfileIdentity})
 	if err != nil {
 		return true, fmt.Errorf("create Worker Sandbox: %w", err)
@@ -124,7 +182,7 @@ func (node *Node) RunOnce(ctx context.Context) (claimed bool, returnedErr error)
 	if created.Error != nil {
 		return true, fmt.Errorf("create Worker Sandbox rejected: %s", created.Error.Code)
 	}
-	if err := node.config.API.Validate(leaseCtx, *lease); err != nil {
+	if err := node.waitForAuthority(leaseCtx, *lease); err != nil {
 		return true, err
 	}
 	response, executionErr := node.supervisor.ExecutePython(leaseCtx, sandboxsupervisor.ExecutePythonRequest{
@@ -142,16 +200,54 @@ func (node *Node) RunOnce(ctx context.Context) (claimed bool, returnedErr error)
 	}
 	// Client decoding owns these bytes. Keep the exact immutable snapshot until
 	// acknowledgement; neither retries nor cleanup synthesize another result.
-	reportCtx, cancelReport := context.WithTimeout(ctx, node.config.ReportTimeout)
-	defer cancelReport()
+	// Healthy reporting has its own budget. Disconnected time is bounded by
+	// the independent recovery watchdog instead of destroying recoverable work.
+	remaining := node.config.ReportTimeout
 	for {
-		if err := node.config.API.Complete(reportCtx, *lease, *result); err == nil {
+		started := time.Now()
+		reportCtx, cancelReport := context.WithTimeout(leaseCtx, remaining)
+		err := node.config.API.Complete(reportCtx, *lease, *result)
+		cancelReport()
+		if reportUnavailable(err) {
+			monitor.reportUnavailable()
+		}
+		if err == nil {
 			return true, nil
-		} else if !workerapi.Retryable(err) {
+		} else if !workerapi.Retryable(err) && !(isLeaseConflict(err) && !monitor.completed.Load()) && !(errors.Is(err, context.DeadlineExceeded) && monitor.disconnected.Load()) {
 			return true, fmt.Errorf("report immutable Execution Result: %w", err)
 		}
-		if err := pause(reportCtx, node.config.RetryInterval); err != nil {
+		if err := pause(leaseCtx, node.config.RetryInterval); err != nil {
 			return true, fmt.Errorf("report immutable Execution Result: %w", err)
+		}
+		remaining -= monitor.reportingTime(started)
+		if remaining <= 0 {
+			return true, errors.New("immutable Execution Result reporting budget exhausted")
+		}
+	}
+}
+
+func (node *Node) cleanup(lease workerapi.Lease, sandboxID string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), node.config.CleanupTimeout)
+	defer cancel()
+	if sandboxID != "" {
+		response, err := node.supervisor.DestroySandbox(ctx, sandboxsupervisor.DestroySandboxRequest{RequestID: "destroy-" + sandboxID, SandboxID: sandboxID})
+		if err != nil {
+			return fmt.Errorf("clean Worker Sandbox: %w", err)
+		}
+		if response.Error != nil && response.Error.Code != sandboxsupervisor.ErrorCodeSandboxNotFound {
+			return fmt.Errorf("Supervisor cleanup rejected: %s", response.Error.Code)
+		}
+	}
+	for {
+		err := node.config.API.Release(ctx, lease)
+		if err == nil {
+			return nil
+		}
+		if !workerapi.Retryable(err) {
+			return fmt.Errorf("acknowledge Sandbox capacity release: %w", err)
+		}
+		if err := pause(ctx, node.config.RetryInterval); err != nil {
+			return err
 		}
 	}
 }

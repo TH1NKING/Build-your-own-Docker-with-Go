@@ -53,7 +53,7 @@ func TestAgentctlMigrationConnectionFailureIsDiagnostic(t *testing.T) {
 func TestAgentctlMigrationInitializesAndRepeats(t *testing.T) {
 	databaseURL := migrationDatabase(t)
 	binary := buildAgentctl(t)
-	for index, want := range []string{"schema_version=3 applied=3", "schema_version=3 applied=0"} {
+	for index, want := range []string{"schema_version=5 applied=5", "schema_version=5 applied=0"} {
 		output, err := runMigration(t, binary, databaseURL)
 		if err != nil || strings.TrimSpace(output) != want {
 			t.Fatalf("migration invocation %d: %v\n%s\nwant %s", index+1, err, output, want)
@@ -68,7 +68,7 @@ func TestAgentctlMigrationStatusWorksOnReadOnlyConnections(t *testing.T) {
 	query := readOnlyURL.Query()
 	query.Set("default_transaction_read_only", "on")
 	readOnlyURL.RawQuery = query.Encode()
-	for _, want := range []string{"schema_version=0 applied=0", "schema_version=3 applied=0"} {
+	for _, want := range []string{"schema_version=0 applied=0", "schema_version=5 applied=0"} {
 		output, err := runMigration(t, binary, readOnlyURL.String(), "--status")
 		if err != nil || strings.TrimSpace(output) != want {
 			t.Fatalf("read-only migration status: %v\n%s\nwant %s", err, output, want)

@@ -10,6 +10,7 @@ const (
 	OperationExecutePython      = "execute_python"
 	OperationDestroySandbox     = "destroy_sandbox"
 	OperationGetExecutionResult = "get_execution_result"
+	OperationInspectSandbox     = "inspect_sandbox"
 )
 
 type ErrorCode string
@@ -48,6 +49,24 @@ type DestroySandboxResponse struct {
 }
 
 type DestroySandboxResult struct {
+	SandboxID string `json:"sandbox_id"`
+}
+
+type InspectSandboxRequest struct {
+	RequestID string
+	SandboxID string
+}
+
+type InspectSandboxResponse struct {
+	Schema    string                `json:"schema"`
+	RequestID string                `json:"request_id"`
+	Result    *InspectSandboxResult `json:"result"`
+	Error     *ProtocolError        `json:"error"`
+}
+
+// InspectSandboxResult confirms a live original Sandbox at the inspection
+// boundary; it does not grant an Execution Lease or expose host process paths.
+type InspectSandboxResult struct {
 	SandboxID string `json:"sandbox_id"`
 }
 

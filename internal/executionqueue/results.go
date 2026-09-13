@@ -54,8 +54,9 @@ func (s *Store) transition(ctx context.Context, token, id string, generation int
 	var owner, state string
 	var current int64
 	var expires time.Time
+	var released bool
 	var stored, workload []byte
-	err = tx.QueryRow(ctx, `SELECT COALESCE(worker_id,''),state,generation,COALESCE(lease_expires_at,'epoch'::timestamptz),result,workload FROM control_plane.executions WHERE id=$1 FOR UPDATE`, id).Scan(&owner, &state, &current, &expires, &stored, &workload)
+	err = tx.QueryRow(ctx, `SELECT COALESCE(worker_id,''),state,generation,COALESCE(lease_expires_at,'epoch'::timestamptz),result,workload,capacity_released FROM control_plane.executions WHERE id=$1 FOR UPDATE`, id).Scan(&owner, &state, &current, &expires, &stored, &workload, &released)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrLease
 	}
@@ -73,7 +74,7 @@ func (s *Store) transition(ctx context.Context, token, id string, generation int
 		return workercredential.ErrUnauthenticated
 	}
 	if result == nil {
-		if state != "leased" || !expires.After(now) {
+		if state != "leased" || released || !expires.After(now) {
 			return ErrLease
 		}
 		return nil
@@ -108,10 +109,10 @@ func (s *Store) transition(ctx context.Context, token, id string, generation int
 		}
 		return nil
 	}
-	if state != "leased" || !expires.After(now) {
+	if state != "leased" || released || !expires.After(now) {
 		return ErrLease
 	}
-	tag, err := tx.Exec(ctx, `UPDATE control_plane.executions SET state='completed',result=$4 WHERE id=$1 AND worker_id=$2 AND generation=$3 AND state='leased' AND lease_expires_at>clock_timestamp() AND $5::timestamptz>clock_timestamp()`, id, worker.ID, generation, raw, worker.ExpiresAt)
+	tag, err := tx.Exec(ctx, `UPDATE control_plane.executions SET state='completed',result=$4 WHERE id=$1 AND worker_id=$2 AND generation=$3 AND state='leased' AND NOT capacity_released AND lease_expires_at>clock_timestamp() AND $5::timestamptz>clock_timestamp()`, id, worker.ID, generation, raw, worker.ExpiresAt)
 	if err != nil {
 		return databaseError(ctx)
 	}

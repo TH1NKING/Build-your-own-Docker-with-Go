@@ -192,6 +192,8 @@ func (service *server) responseForRequest(operation *controlOperation, request r
 		return service.destroySandboxResponse(request.RequestID, request.Parameters)
 	case OperationGetExecutionResult:
 		return service.getExecutionResultResponse(request.RequestID, request.Parameters)
+	case OperationInspectSandbox:
+		return service.inspectSandboxResponse(request.RequestID, request.Parameters)
 	default:
 		return protocolErrorResponse(request.RequestID, ErrorCodeUnknownOperation)
 	}

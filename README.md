@@ -91,7 +91,9 @@ T15 的 `make test-sandbox-acceptance` 将完整 Execution/Lifecycle 与创建�
 
 T22–T24 已接通 Worker 身份、PostgreSQL Execution 队列和单次沙箱执行：`agentctl worker` 管理独立凭据，数据库只存摘要；Worker 通过 HTTPS 长轮询领取带代际和期限的 Lease。领取与结果提交使用事务和行锁，拒绝错误 Worker、代际与过期结果；结果确认丢失时只重报同一快照，不重新执行 Python。Worker 以非 root 账户运行，确认或失败退出后独立清理 Sandbox。
 
-`make test-worker-api` 验证真实 PostgreSQL 上的凭据、并发领取和不可变结果；`make test-worker-execution` 验证真实 Linux、TLS、Supervisor 和 Python，包括提交后断连、私有 CA、非 root Worker 与二进制输出。两者均要求专用 `AGENT_TEST_DATABASE_URL`。当前每个 Agent Run 只有一次 Execution，Control Plane 入口只监听 loopback；多步复用、心跳恢复、容量调度和公网部署由后续 ticket 完成。[Worker API 合同](docs/worker-api-v1.md)说明命令与失败语义，[T22–T24 学习笔记](docs/learning/t22-t24-worker-execution.md)说明事务、租约、幂等和方案取舍。
+T27 增加默认 2 个 Sandbox 的 Worker 容量：领取与预留在同一事务中完成，结果提交后仍占名额，直到 Supervisor 确认清理成功才释放。T31 增加创建前的 Sandbox 绑定、心跳续期和同 Worker 的有界恢复；HTTPS 暂时断连时保留原 Sandbox 和本地执行连接，恢复前检查 Init 与 Sandbox 存活。窗口到期后以 `worker_lost` 结束，不自动重派或重跑不确定的 Workload。实现、取舍、故障演示与代码阅读顺序见 [T27/T31 学习笔记](docs/learning/t27-t31-worker-capacity-recovery.md)。
+
+`make test-worker-api` 验证真实 PostgreSQL 上的凭据、容量竞争、不可变结果和恢复状态；`make test-worker-execution` 验证真实 Linux、TLS、Supervisor 和 Python，包括两并发一等待、清理失败保留占用、原 Sandbox 断连恢复、恢复超时、私有 CA、非 root Worker 与二进制输出。两者均要求专用 `AGENT_TEST_DATABASE_URL`，Linux 入口拒绝跳过或缺少必需用例。当前每个 Agent Run 只有一次 Execution，Control Plane 入口只监听 loopback；多步复用、完整 Operator 流程和公网部署仍由后续 ticket 完成。[Worker API 合同](docs/worker-api-v1.md)说明配置和失败语义，[T22–T24 学习笔记](docs/learning/t22-t24-worker-execution.md)保留前一阶段的事务、租约和幂等设计。
 
 ## 使用 Go Runtime Lab
 
