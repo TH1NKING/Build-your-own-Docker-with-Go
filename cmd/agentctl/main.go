@@ -23,10 +23,14 @@ func main() {
 func run(arguments []string) error {
 	if len(arguments) == 1 && (arguments[0] == "--help" || arguments[0] == "-h") {
 		fmt.Fprintln(os.Stdout, "Usage: agentctl migrate [--status] [--timeout=1m] [--migrations-dir=DIR]")
+		fmt.Fprintln(os.Stdout, "       agentctl worker provision|rotate|revoke|list [options]")
 		return nil
 	}
+	if len(arguments) > 0 && arguments[0] == "worker" {
+		return runWorker(arguments[1:])
+	}
 	if len(arguments) == 0 || arguments[0] != "migrate" {
-		return errors.New("expected subcommand: migrate (use --help for usage)")
+		return errors.New("expected subcommand: migrate or worker (use --help for usage)")
 	}
 	flags := flag.NewFlagSet("agentctl migrate", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
