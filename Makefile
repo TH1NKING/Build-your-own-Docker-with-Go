@@ -1,4 +1,4 @@
-.PHONY: build check fmt-check shell-check test test-migrations test-sandbox-creation test-sandbox-init vet
+.PHONY: build check fmt-check shell-check test test-migrations test-sandbox-creation test-sandbox-init test-sandbox-acceptance vet
 
 GO_FILES := $(shell find . -type f -name '*.go' -not -path './.git/*' -not -path './.cache/*')
 
@@ -29,6 +29,8 @@ shell-check:
 	bash -n with_shell/*.sh
 	bash -n tests/run-sandbox-creation-linux.sh
 	bash -n tests/run-sandbox-init-linux.sh
+	bash -n tests/run-sandbox-acceptance-linux.sh
+	bash -n tests/run-sandbox-file-demo-linux.sh
 	bash -n tests/sandbox-cgroup-fixture.sh
 
 test-sandbox-creation:
@@ -36,3 +38,6 @@ test-sandbox-creation:
 
 test-sandbox-init:
 	bash tests/run-sandbox-init-linux.sh
+
+test-sandbox-acceptance:
+	bash tests/run-sandbox-acceptance-linux.sh

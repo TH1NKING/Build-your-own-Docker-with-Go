@@ -30,7 +30,7 @@ func (client *Client) DestroySandbox(ctx context.Context, request DestroySandbox
 func (client *Client) CreateSandbox(ctx context.Context, request CreateSandboxRequest) (CreateSandboxResponse, error) {
 	var response CreateSandboxResponse
 	err := client.exchange(ctx, request.RequestID, OperationCreateSandbox, createSandboxParameters{
-		SandboxID: request.SandboxID, ProfileIdentity: request.ProfileIdentity,
+		SandboxID: request.SandboxID, ProfileIdentity: request.ProfileIdentity, Attachments: request.Attachments,
 	}, &response)
 	return response, err
 }

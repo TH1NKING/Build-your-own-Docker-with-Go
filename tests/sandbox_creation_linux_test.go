@@ -78,7 +78,19 @@ func TestSandboxCreationDetachesHostRootAndKeepsProfileReadOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	lines := strings.Split(strings.TrimSpace(string(mountinfo)), "\n")
-	allowedMounts := map[string]bool{"/": false, "/proc": false, "/workspace": false, "/tmp": false}
+	allowedMounts := map[string]bool{
+		"/": false, "/proc": false, "/dev": false, "/dev/null": false, "/dev/zero": false,
+		"/workspace": false, "/workspace/input": false, "/tmp": false,
+	}
+	// Kernel configurations differ, but every present sensitive entry must
+	// receive its own fixed read-only mask. No other mount is admitted.
+	for _, name := range []string{"sys", "irq", "bus", "fs", "acpi", "scsi", "kcore", "keys", "timer_list", "sysrq-trigger", "interrupts", "kallsyms", "slabinfo", "vmallocinfo", "modules", "iomem", "ioports", "sched_debug"} {
+		if _, err := os.Lstat(filepath.Join("/proc", pid, "root", "proc", name)); err == nil {
+			allowedMounts["/proc/"+name] = false
+		} else if !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+	}
 	for _, line := range lines {
 		fields := strings.Fields(line)
 		if len(fields) < 10 {
@@ -88,8 +100,8 @@ func TestSandboxCreationDetachesHostRootAndKeepsProfileReadOnly(t *testing.T) {
 			t.Fatalf("unexpected or non-private Sandbox mount: %s", line)
 		}
 		allowedMounts[fields[4]] = true
-		if fields[4] == "/" && !strings.Contains(","+fields[5]+",", ",ro,") {
-			t.Fatalf("root mount is writable: %s", line)
+		if fields[4] != "/workspace" && fields[4] != "/tmp" && !strings.Contains(","+fields[5]+",", ",ro,") {
+			t.Fatalf("Profile, input, or kernel view mount is writable: %s", line)
 		}
 	}
 	for mountpoint, seen := range allowedMounts {
@@ -111,7 +123,7 @@ func TestSandboxCreationDetachesHostRootAndKeepsProfileReadOnly(t *testing.T) {
 			continue
 		}
 		info, err := os.Stat(filepath.Join(fdDirectory, fd.Name()))
-		if err == nil && (info.IsDir() || info.Mode().IsRegular()) {
+		if err == nil && (info.IsDir() || info.Mode().IsRegular() || info.Mode()&os.ModeSocket != 0) {
 			t.Fatalf("Sandbox retains host filesystem descriptor %s (%s): %v", fd.Name(), target, info.Mode())
 		}
 	}

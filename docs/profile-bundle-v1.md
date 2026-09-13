@@ -80,7 +80,7 @@ filesystem failure.
 The installed root also contains `/sandbox-init`, copied from the verified
 outer Init component with mode `0555`, `/system-call-policy.json`, copied from
 its verified component with mode `0444`, and empty root-owned `0555` directories
-at `/proc`, `/workspace`, and `/tmp`. These five paths and every path beneath
+at `/proc`, `/dev`, `/workspace`, and `/tmp`. These six paths and every path beneath
 them are reserved: a root-filesystem archive that occupies any of them is
 rejected. The Init and Policy copies and mountpoints are materialized in staging before
 publication; they do not change the independently verified `rootfs.tar`
@@ -91,6 +91,11 @@ ownership, mode, size, and SHA-256 against its manifest component using
 directory handles and rejects a Policy that cannot compile. Bootstrap mounts the Profile root read-only and enters
 the bundled `/sandbox-init` as namespace PID 1. The reserved directories
 allow private runtime mounts without making the Profile root writable.
+
+T07 adds the reserved `/dev` mountpoint. Older installed layouts without it
+are not modified in place: rebuild the current Bundle and install into a fresh
+trusted store. The runtime creates its minimal devices only in private Sandbox
+mounts, never by populating the immutable Profile with host device nodes.
 
 Version 1 bounds one source artifact to 256 MiB, one root-filesystem file to
 256 MiB, the normalized root filesystem to 1 GiB and 100,000 entries, and paths

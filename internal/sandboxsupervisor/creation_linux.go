@@ -233,7 +233,7 @@ func (creator *sandboxCreator) releaseLocked(id string, sandbox *createdSandbox,
 	return err
 }
 
-func (creator *sandboxCreator) create(operation *controlOperation, id string, profile *os.File) ErrorCode {
+func (creator *sandboxCreator) create(operation *controlOperation, id string, profile *os.File, attachments []openedAttachment) ErrorCode {
 	sandbox, code := creator.reserve(id)
 	if code != "" {
 		return code
@@ -288,16 +288,23 @@ func (creator *sandboxCreator) create(operation *controlOperation, id string, pr
 
 	// Namespace construction happens before exec, so no goroutine in the
 	// network-facing Supervisor ever changes its own namespaces or root.
-	storagePolicy, err := json.Marshal(creator.config.ResourceBudget.Storage)
+	policy := bootstrapPolicy{Storage: creator.config.ResourceBudget.Storage}
+	for _, attachment := range attachments {
+		policy.AttachmentNames = append(policy.AttachmentNames, attachment.name)
+	}
+	encodedPolicy, err := json.Marshal(policy)
 	if err != nil {
 		return ErrorCodeCreationFailed
 	}
-	command := exec.CommandContext(sandbox.ctx, "/proc/self/exe", "--sandbox-bootstrap", string(storagePolicy))
+	command := exec.CommandContext(sandbox.ctx, "/proc/self/exe", "--sandbox-bootstrap", string(encodedPolicy))
 	// Go's container-aware GOMAXPROCS otherwise keeps host cgroup files open
 	// across pivot_root. These trusted bootstrap settings close those handles
 	// at runtime startup, before readiness. This is not a Workload CPU budget.
 	command.Env = []string{"GOMAXPROCS=1", "GODEBUG=containermaxprocs=0,updatemaxprocs=0"}
 	command.ExtraFiles = []*os.File{readyWriter, requestReader, profile, responseWriter}
+	for _, attachment := range attachments {
+		command.ExtraFiles = append(command.ExtraFiles, attachment.file)
+	}
 	// Force an exec-managed pipe even when the Supervisor logs to a host file.
 	command.Stderr = struct{ io.Writer }{os.Stderr}
 	command.SysProcAttr = &syscall.SysProcAttr{

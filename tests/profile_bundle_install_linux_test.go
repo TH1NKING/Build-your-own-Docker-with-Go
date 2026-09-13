@@ -66,7 +66,7 @@ func TestProfileBundleInstallPublishesVerifiedRootOwnedProfile(t *testing.T) {
 	if err != nil || string(initBytes) != "abc" {
 		t.Fatalf("installed root Sandbox Init = %q, err=%v, want verified component abc", initBytes, err)
 	}
-	for _, name := range []string{"sandbox-init", "proc", "workspace", "tmp"} {
+	for _, name := range []string{"sandbox-init", "proc", "dev", "workspace", "tmp"} {
 		info, err := os.Lstat(filepath.Join(installedPath, "rootfs", name))
 		if err != nil {
 			t.Fatalf("inspect reserved root path %s: %v", name, err)
@@ -148,7 +148,7 @@ func TestProfileBundleInstallIsIdempotentForTheSameDigest(t *testing.T) {
 }
 
 func TestProfileBundleInstallRejectsReservedSandboxRootPaths(t *testing.T) {
-	for _, reserved := range []string{"sandbox-init", "proc", "workspace", "tmp"} {
+	for _, reserved := range []string{"sandbox-init", "proc", "dev", "workspace", "tmp"} {
 		for _, kind := range []string{"file", "descendant", "symlink"} {
 			t.Run(reserved+"/"+kind, func(t *testing.T) {
 				name := reserved

@@ -15,6 +15,9 @@ T10 makes Workspace and temporary-storage budgets configurable and enforces
 them through per-Sandbox tmpfs mounts before any Workload starts.
 T14 adds declared output paths and bounded binary file snapshots in Execution
 Results, independently of stdout/stderr and tmpfs allocation budgets.
+T13 adds creation-time read-only Attachment inputs from a trusted staging root.
+T07 supplies minimal device and restricted proc views, with descriptor and
+network isolation acceptance. T15 joins the real-kernel suites without skips.
 The default protocol-only mode still returns `operation_unavailable` for a
 valid `create_sandbox` request whose Profile exists.
 
@@ -39,6 +42,17 @@ it.
 
 `sandboxd` refuses to overwrite a pre-existing file, directory, symlink, or
 active socket at the configured socket path.
+
+Optional `--attachment-root <absolute-staging-root>` enables T13 inputs.
+The complete path is opened without following symlinks; the final directory
+must be Supervisor-owned and not group/other writable. Production staged
+objects are root-owned regular files, exactly mode `0444`, with one hard link.
+The root and its ancestors must allow subordinate IDs to traverse them;
+bootstrap never changes their permissions. The trusted staging component
+must keep source contents unchanged for the entire Sandbox lifetime.
+Fixed v1 admission limits are 16 inputs, 20 MiB per input and 100 MiB total.
+These are independent of writable Workspace and extracted-output budgets.
+Omission disables Attachment inputs but preserves creation without inputs.
 
 Creation additionally requires trusted startup configuration:
 
@@ -150,8 +164,9 @@ File slots include directories, symlinks and extra hard links. Open unlinked
 files remain charged until their last reference is released. Three trusted
 Workspace inodes (root, `input`, `output`) and the one `/tmp` root inode are
 reserved separately. Only `/workspace/output` is Workload-owned within the
-Workspace. The root-owned `0555` input directory is currently an empty,
-non-writable reservation; T13 supplies actual read-only Attachment mounts.
+Workspace. The root-owned `0555` input slot is covered by a separate read-only
+tmpfs with a 1 MiB / 17-inode metadata allowance. Its selected Attachment bind
+mounts do not consume the Workload's writable Workspace inode allowance.
 
 The kernel refuses allocations at the byte or inode boundary, including writes
 from concurrent descendants. Ordinary writes may short-write and then fail
@@ -228,6 +243,32 @@ PID, UID, GID, command, environment, mount, Network Policy, or Resource Budget.
 `sandboxd` derives filesystem locations beneath its already-open configured
 roots. Profile symlinks and references that cannot be resolved beneath the
 Profile store are rejected.
+
+Creation may additionally include:
+
+```json
+"attachments": [{"staging_id": "csv-001", "name": "sales.csv"}]
+```
+
+`staging_id` follows the opaque identifier grammar and selects one file
+directly under the configured staging root. `name` is one ASCII filename
+of 1–128 letters, digits, dots, underscores or hyphens, excluding `.` and `..`.
+It appears at `/workspace/input/<name>`; nested input paths are not supported.
+Duplicate names or staging identifiers, invalid references, special files,
+links, writable or foreign-owned sources and admission-limit excess return
+`invalid_reference`. Unknown or duplicate nested fields and null elements
+return `malformed_request`. A nonempty list without configured staging returns
+`operation_unavailable`. Validation completes before reserving a Sandbox ID.
+
+The input set is fixed at creation and survives sequential Executions.
+Each file is bound non-recursively with `ro,nosuid,nodev,noexec`; the input
+directory is also read-only, preventing deletion, replacement and new entries.
+Creation passes verified handles privately. Before hiding host `/tmp`, bootstrap
+reopens them in its new mount namespace and verifies device/inode identity and
+metadata against the inherited handles, then binds and closes all input FDs.
+A disappeared, replaced or inaccessible source aborts creation and follows the
+existing cleanup/retry contract. This local interface receives already-authorized
+staging references; Conversation-level authorization and transfer remain T37.
 
 Execution requests select only an existing Sandbox and a bounded Python
 Workload; the fixed interpreter is `/opt/python/bin/python3 -I -B -c <source>`:
@@ -581,7 +622,7 @@ Profile. The temporary staging disappears with the detached old root.
 
 The installer materializes the separately verified Init at `/sandbox-init`,
 the matching Policy at `/system-call-policy.json`, and
-reserves empty `/proc`, `/workspace`, and `/tmp` directories. Before creation,
+reserves empty `/proc`, `/dev`, `/workspace`, and `/tmp` directories. Before creation,
 the Supervisor checks both copies' owner, mode, size, SHA-256 and
 non-symlink status against the installed manifest, and validates and compiles
 the Policy. The bootstrap mounts local
@@ -590,8 +631,22 @@ proc, a private Workspace tmpfs and a private temporary tmpfs, then `exec`s
 root stays read-only; only `/workspace/output` and `/tmp` are writable by UID
 1000. T10 configures Workspace (default 512 MiB, 5003 inodes including trusted
 directories) and temporary storage (default 16 MiB, 1024 inodes) through the
-trusted storage policy described above. The input directory is root-owned;
-T13 will bind authorized Attachments there read-only.
+trusted storage policy described above. T13 binds only the selected inputs.
+
+T07 creates a private read-only `/dev` tmpfs (64 KiB, 16 inode ceiling), binding
+only validated character devices `null` (1:3) and `zero` (1:5). Read-only mount
+metadata does not disable a character device's driver writes, so the exact
+device identities are essential. No host device directory, TTY or PTY is shared.
+Fresh proc is read-only with `nosuid,nodev,noexec`; sensitive global directories
+and files are covered by fixed empty views. This preserves namespace-local
+process inspection, but does not hide all shared-kernel statistics such as
+`meminfo` and `uptime`. `/sys` and the detached old root remain absent.
+New network namespaces have no configured external connectivity; production
+requests cannot override the `none` policy. Runtime Lab networking is separate.
+
+Existing installed Profiles lacking the reserved `/dev` slot fail closed.
+Upgrade by building a current Bundle and installing into a fresh trusted store;
+do not mutate an existing content-addressed installation.
 
 The Supervisor starts the child from an already-open Profile directory on a
 locked OS thread with an unshared `CLONE_FS` context. The inherited current
@@ -660,12 +715,25 @@ but no crash-recovery contract. Cgroup cleanup failures retain owned handles
 and the Sandbox identity reservation for a later `destroy_sandbox` retry;
 successful destruction waits for removal of the Execution, Init, and budget
 groups. T11 and T14's bounded local result snapshots add no crash recovery.
-Complete mount hardening remains T07, Attachment binding remains T13, and
-combined security acceptance remains T15. ArtifactStore integration is later
-work starting with T16. This is not the complete
-production security boundary.
+T07 and T13 complete these local mount/input contracts; the T15 runner combines
+their acceptance with the existing identity, lifecycle, Policy and budget suites.
+ArtifactStore integration starts with T16. These checks do not claim a complete
+deployed Agent platform or protection against every shared-kernel vulnerability.
 
 ## Verification
+
+With locked Profile sources available, run the full T15 real-kernel gate:
+
+```sh
+PROFILE_BUNDLE_SOURCE_CACHE=/absolute/path/to/cache bash tests/run-sandbox-acceptance-linux.sh
+```
+
+It joins complete Execution/Lifecycle and Creation suites, rejects skips and
+missing required T13/T07 tests, and retains separate logs. The
+[acceptance report](learning/t15-kernel-acceptance.md) records the tested kernel
+and coverage. For the three input/output demonstrations, use
+`bash tests/run-sandbox-file-demo-linux.sh normal`, `read-only`, or `malicious`;
+see the [step-by-step guide](learning/sandbox-file-demo.md).
 
 Run the protocol acceptance suite as an ordinary Linux user, not through
 `sudo`:
