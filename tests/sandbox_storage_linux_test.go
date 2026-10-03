@@ -361,4 +361,5 @@ print('reused')`)
 	if reused.ExitCode != 0 || reused.Stdout != "reused\n" || reused.ResourceUsage.OOMEvents != 0 {
 		t.Fatalf("retained storage must stay charged until released: %+v", reused)
 	}
+	t.Log("DEMO storage: 8192-byte Workspace refuses the next byte with ENOSPC; retained file stays charged across Executions; unlink releases space; no OOM")
 }

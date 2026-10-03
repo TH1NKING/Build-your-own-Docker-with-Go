@@ -101,10 +101,16 @@ func TestWorkerExecutionCapacityRunsTwoSandboxesAndQueuesTheThird(t *testing.T) 
 	if err != nil || third.State != "queued" {
 		t.Fatalf("third Execution bypassed occupied Sandbox capacity: %+v %v", third, err)
 	}
+	capacity, err := api.Capacity(ctx)
+	if err != nil || capacity.Configured != 2 || capacity.Occupied != 2 || capacity.Available != 0 {
+		t.Fatalf("two active Sandboxes did not retain both slots: %+v %v", capacity, err)
+	}
+	t.Logf("DEMO capacity: configured=%d occupied=%d available=%d; first two Sandboxes progressed independently, third Execution state=%s", capacity.Configured, capacity.Occupied, capacity.Available, third.State)
 	close(permits[first])
 	if next := receive(); next != "capacity-3" {
 		t.Fatalf("released slot did not admit third Execution: %s", next)
 	}
+	t.Log("DEMO capacity: releasing one completed and cleaned Sandbox admitted the queued third Execution")
 	close(permits[second])
 	close(permits["capacity-3"])
 	for {
@@ -127,6 +133,7 @@ func TestWorkerExecutionCapacityRunsTwoSandboxesAndQueuesTheThird(t *testing.T) 
 			t.Fatal(err)
 		}
 		if complete && capacity.Occupied == 0 {
+			t.Logf("DEMO capacity: all three results completed; occupied=%d available=%d after cleanup", capacity.Occupied, capacity.Available)
 			break
 		}
 		select {

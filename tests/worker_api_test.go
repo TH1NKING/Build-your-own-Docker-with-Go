@@ -453,4 +453,5 @@ func TestWorkerAPICompetingClaimsHaveOneOwner(t *testing.T) {
 	if owners != 1 {
 		t.Fatalf("got %d owners for one Execution generation", owners)
 	}
+	t.Logf("DEMO capacity: %d concurrent Workers competed for one PostgreSQL Execution; owners=%d", len(clients), owners)
 }

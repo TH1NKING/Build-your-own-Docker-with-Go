@@ -70,6 +70,7 @@ func TestWorkerAPICapacityBoundsConcurrentClaimsForOneWorker(t *testing.T) {
 	if len(claimed) != 2 {
 		t.Fatalf("one Worker claimed %d Executions concurrently, want capacity 2", len(claimed))
 	}
+	t.Logf("DEMO capacity: eight concurrent HTTPS claims for one Worker acquired %d unique Executions, matching its configured Sandbox capacity", len(claimed))
 }
 
 func capacityAPIPost(t *testing.T, ctx context.Context, server *httptest.Server, token, route, body string, target any) int {
@@ -164,6 +165,7 @@ func TestWorkerAPICapacityWaitsForCleanupRelease(t *testing.T) {
 	if next, err := client.Claim(ctx, 0); err != nil || next != nil {
 		t.Fatalf("completion released capacity before cleanup: %+v %v", next, err)
 	}
+	t.Log("DEMO capacity: committing an Execution Result retained its slot; the next claim remained blocked until explicit cleanup release")
 	body := fmt.Sprintf(`{"execution_id":%q,"generation":%d}`, first.ExecutionID, first.Generation)
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL+"/worker/v1/release", bytes.NewBufferString(body))
 	if err != nil {
@@ -184,6 +186,7 @@ func TestWorkerAPICapacityWaitsForCleanupRelease(t *testing.T) {
 	if next, err := client.Claim(ctx, 0); err != nil || next == nil || next.ExecutionID != "cleanup-execution-2" {
 		t.Fatalf("claim after cleanup: %+v %v", next, err)
 	}
+	t.Log("DEMO capacity: cleanup release admitted the queued Execution; retrying the original immutable result still succeeded")
 }
 
 func TestWorkerAPICapacityRejectsInvalidProtocolAndRevokedCredentials(t *testing.T) {

@@ -23,11 +23,14 @@ import (
 
 func TestWorkerExecutionRecoversTheSameSandboxAfterHTTPSDisconnection(t *testing.T) {
 	for _, scenario := range []struct {
-		name      string
-		delay     time.Duration
-		blackhole bool
-	}{{"during_execution", 2 * time.Second, false}, {"pending_result", 100 * time.Millisecond, false}, {"pending_result_blackhole", 100 * time.Millisecond, true}} {
-		t.Run(scenario.name, func(t *testing.T) { verifyWorkerHTTPSRecovery(t, scenario.delay, scenario.blackhole) })
+		name          string
+		delay         time.Duration
+		blackhole     bool
+		pendingResult bool
+	}{{"during_execution", 2 * time.Second, false, false}, {"pending_result", 100 * time.Millisecond, false, true}, {"pending_result_blackhole", 100 * time.Millisecond, true, true}} {
+		t.Run(scenario.name, func(t *testing.T) {
+			verifyWorkerHTTPSRecovery(t, scenario.delay, scenario.blackhole, scenario.pendingResult)
+		})
 	}
 }
 
@@ -54,6 +57,7 @@ func TestWorkerExecutionHealthyHeartbeatsDoNotHideReportFailure(t *testing.T) {
 		t.Fatalf("healthy authority must not suspend reporting forever: claimed=%v err=%v", claimed, err)
 	}
 	assertNoResourceCgroups(t)
+	t.Log("DEMO recovery: healthy heartbeats did not hide repeated result-report failures; reporting budget expired and Sandbox resources were cleaned")
 }
 
 func TestWorkerExecutionCommittedResultAcknowledgementHasABoundedWait(t *testing.T) {
@@ -102,9 +106,10 @@ func TestWorkerExecutionCommittedResultAcknowledgementHasABoundedWait(t *testing
 		t.Fatalf("committed result kept cleaned capacity: %+v %v", capacity, err)
 	}
 	assertNoResourceCgroups(t)
+	t.Log("DEMO recovery: permanently lost result acknowledgement exhausted its bounded wait; original committed result survived and cleaned capacity was released")
 }
 
-func verifyWorkerHTTPSRecovery(t *testing.T, workloadDelay time.Duration, blackhole bool) {
+func verifyWorkerHTTPSRecovery(t *testing.T, workloadDelay time.Duration, blackhole, pendingResult bool) {
 	t.Helper()
 	fixture, identity := installedSandboxExecutionFixture(t)
 	t.Cleanup(startSandboxSupervisor(t, fixture,
@@ -121,11 +126,17 @@ func verifyWorkerHTTPSRecovery(t *testing.T, workloadDelay time.Duration, blackh
 		t.Fatal(err)
 	}
 	var disconnected atomic.Bool
+	var disconnectReport sync.Once
 	restored := make(chan struct{})
 	var restoreOnce sync.Once
 	restore := func() { disconnected.Store(false); restoreOnce.Do(func() { close(restored) }) }
 	handler := workerapi.NewHandler(queue)
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Inject a result-pending outage at the real reporting boundary. A
+		// 100 ms polling race against Python completion is unreliable on VMs.
+		if pendingResult && r.URL.Path == "/worker/v1/complete" {
+			disconnectReport.Do(func() { disconnected.Store(true) })
+		}
 		if disconnected.Load() {
 			if !blackhole {
 				http.Error(w, "connection unavailable", http.StatusServiceUnavailable)
@@ -181,7 +192,9 @@ func verifyWorkerHTTPSRecovery(t *testing.T, workloadDelay time.Duration, blackh
 		}
 		if record.SandboxID != "" {
 			response, err := local.GetExecutionResult(ctx, sandboxsupervisor.GetExecutionResultRequest{RequestID: "observe-running", SandboxID: record.SandboxID, ExecutionID: "recover-execution"})
-			if err == nil && response.Error != nil && response.Error.Code == sandboxsupervisor.ErrorCodeResultNotReady {
+			running := err == nil && response.Error != nil && response.Error.Code == sandboxsupervisor.ErrorCodeResultNotReady
+			retained := err == nil && response.Error == nil && response.Result != nil && disconnected.Load()
+			if (!pendingResult && running) || (pendingResult && retained) {
 				original = record.SandboxID
 				break
 			}
@@ -195,12 +208,14 @@ func verifyWorkerHTTPSRecovery(t *testing.T, workloadDelay time.Duration, blackh
 		}
 	}
 	disconnected.Store(true)
+	t.Logf("DEMO recovery: injected HTTPS outage; original Sandbox=%s, result_pending=%v, unresponsive_requests=%v", original, pendingResult, blackhole)
 	for {
 		record, err := queue.Get(ctx, "recover-execution")
 		if err != nil {
 			t.Fatal(err)
 		}
 		if record.State == "recovering" {
+			t.Logf("DEMO recovery: missed heartbeat moved Execution to %s while the original Sandbox remained assigned", record.State)
 			break
 		}
 		if record.State == "worker_lost" {
@@ -234,6 +249,7 @@ func verifyWorkerHTTPSRecovery(t *testing.T, workloadDelay time.Duration, blackh
 		t.Fatalf("recovered Sandbox did not release capacity after cleanup: %+v %v", capacity, err)
 	}
 	assertNoResourceCgroups(t)
+	t.Logf("DEMO recovery: HTTPS restored; same Worker completed in original Sandbox=%s, state=%s, occupied=%d after cleanup", record.SandboxID, record.State, capacity.Occupied)
 }
 
 func TestWorkerExecutionRecoveryExpiryCleansUpWithoutReplayingWork(t *testing.T) {
@@ -277,10 +293,12 @@ func TestWorkerExecutionRecoveryExpiryCleansUpWithoutReplayingWork(t *testing.T)
 		t.Fatalf("expired recovery accepted a result: %+v %v", record, err)
 	}
 	assertNoResourceCgroups(t)
+	t.Logf("DEMO expiry: bounded recovery expired; state=%s, result absent, original Sandbox cgroups cleaned", record.State)
 	restored.Store(true)
 	if next, err := api.Claim(ctx, 0); err != nil || next != nil {
 		t.Fatalf("lost Execution was automatically replayed: %+v %v", next, err)
 	}
+	t.Log("DEMO expiry: HTTPS restored; claiming again returned no work, so the uncertain Execution was not replayed")
 	if err := queue.Enqueue(ctx, executionqueue.Execution{ExecutionID: "explicit-retry", AgentRunID: "explicit-new-run", Source: "print('explicit new run')"}); err != nil {
 		t.Fatal(err)
 	}
@@ -296,4 +314,5 @@ func TestWorkerExecutionRecoveryExpiryCleansUpWithoutReplayingWork(t *testing.T)
 		t.Fatalf("replacement run did not complete: %+v %v", result, err)
 	}
 	assertNoResourceCgroups(t)
+	t.Log("DEMO expiry: an explicit new Agent Run completed successfully after the lost Execution; no automatic retry was created")
 }

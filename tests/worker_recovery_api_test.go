@@ -279,6 +279,7 @@ func TestWorkerAPIRecoveryWindowExpiresWithoutReassignmentOrCapacityRelease(t *t
 	if capacity, err := client.Capacity(ctx); err != nil || capacity.Occupied != 1 {
 		t.Fatalf("lost Sandbox capacity was released before cleanup: %+v %v", capacity, err)
 	}
+	t.Logf("DEMO expiry: API restart preserved deadline; state=%s, recovery rejected, no reassignment, Sandbox capacity retained until cleanup", record.State)
 }
 
 func TestWorkerAPIRecoveryCompletedHeartbeatPreservesLostAcknowledgement(t *testing.T) {

@@ -39,6 +39,7 @@ func TestSandboxExecutionResourceMemoryExhaustion(t *testing.T) {
 	if clean.ExitCode != 0 || clean.Stdout != "healthy\n" || clean.TerminalReason != "exited" || clean.ResourceUsage.OOMEvents != 0 {
 		t.Fatalf("resource exhaustion poisoned a later Sandbox: %+v", clean)
 	}
+	t.Logf("DEMO memory: 64MiB budget -> reason=%s oom_events=%d; destroyed exhausted Sandbox; replacement executes with oom_events=0", result.TerminalReason, result.ResourceUsage.OOMEvents)
 }
 
 func assertNoResourceCgroups(t *testing.T) {
@@ -77,6 +78,7 @@ print('quota-work-complete')`)
 		result.ResourceUsage.CPUUsec < 300000 || result.ResourceUsage.CPUThrottledPeriods == 0 || result.ResourceUsage.CPUThrottledUsec == 0 {
 		t.Fatalf("CPU quota must throttle aggregate work without making it fail: %+v", result)
 	}
+	t.Logf("DEMO CPU: 250m aggregate quota -> exit=%d cpu_usec=%d throttled_periods=%d throttled_usec=%d", result.ExitCode, result.ResourceUsage.CPUUsec, result.ResourceUsage.CPUThrottledPeriods, result.ResourceUsage.CPUThrottledUsec)
 }
 
 func TestSandboxExecutionResourcePIDExhaustionKillsCaughtFailureAndDescendants(t *testing.T) {
@@ -107,6 +109,7 @@ print('clean')`)
 	if clean.ExitCode != 0 || clean.Stdout != "clean\n" || clean.TerminalReason != "exited" || clean.ResourceUsage.PIDLimitEvents != 0 {
 		t.Fatalf("PID exhaustion left descendants or contaminated a later result: %+v", clean)
 	}
+	t.Logf("DEMO PIDs: 32-PID budget -> reason=%s exit=%d pids_limit_events=%d; descendants removed; next Execution has no stale events", result.TerminalReason, result.ExitCode, result.ResourceUsage.PIDLimitEvents)
 }
 
 func TestSandboxExecutionResourceMemoryIncludesRetainedWorkspace(t *testing.T) {

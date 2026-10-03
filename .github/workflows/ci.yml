@@ -88,20 +88,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          source_cache="$RUNNER_TEMP/profile-sources"
-          mkdir -p "$source_cache"
-
-          python_archive="$source_cache/cpython-3.14.7+20260825-x86_64-unknown-linux-musl-install_only_stripped.tar.gz"
-          curl --fail --location --retry 3 \
-            --output "$python_archive" \
-            'https://github.com/astral-sh/python-build-standalone/releases/download/20260825/cpython-3.14.7%2B20260825-x86_64-unknown-linux-musl-install_only_stripped.tar.gz'
-          echo "22374158b61f9415135614fb7ebdba498a84849921bb5ad025809e925d8bb428  $python_archive" | sha256sum --check --strict
-
-          musl_archive="$source_cache/alpine-minirootfs-3.22.5-x86_64.tar.gz"
-          curl --fail --location --retry 3 \
-            --output "$musl_archive" \
-            'https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/x86_64/alpine-minirootfs-3.22.5-x86_64.tar.gz'
-          echo "4b4daa9fe2fc696c4919c4412a4c3d3e770d8fb70292a004a2c72f5096175282  $musl_archive" | sha256sum --check --strict
+          python3 tests/prepare-profile-sources.py --cache "$RUNNER_TEMP/profile-sources"
+          python3 tests/prepare-profile-sources.py --cache "$RUNNER_TEMP/profile-sources" --check
 
       - name: Build Profile Bundle test commands
         shell: bash
@@ -134,6 +122,12 @@ jobs:
           PROFILE_BUNDLE_SOURCE_CACHE="$RUNNER_TEMP/profile-sources" \
             SANDBOX_ACCEPTANCE_LOG_DIR="$RUNNER_TEMP/sandbox-acceptance" \
             bash tests/run-sandbox-acceptance-linux.sh
+
+      - name: Verify Runtime Lab exit status, OverlayFS and isolated bridge demo
+        shell: bash
+        run: |
+          PROFILE_BUNDLE_SOURCE_CACHE="$RUNNER_TEMP/profile-sources" \
+            bash tests/run-runtime-lab-demo-linux.sh
 
       - name: Retain Sandbox acceptance logs
         if: always()

@@ -45,6 +45,7 @@ print('second-ok')`)
 	if got := sandboxProcessForRoot(t, fixture, identity); got != initPID {
 		t.Fatalf("Sandbox Init changed from %s to %s", initPID, got)
 	}
+	t.Logf("DEMO lifecycle: UID/GID=1000; two Python Executions share answer.txt=42; Sandbox Init host PID=%s unchanged", initPID)
 }
 
 func TestSandboxExecutionRejectsOverlapThroughPublicClient(t *testing.T) {
@@ -165,6 +166,7 @@ print('no-descendants-or-zombies')`)
 		t.Fatalf("destroy descendant fixture: %+v, %v", destroyed, err)
 	}
 	assertNoResourceCgroups(t)
+	t.Log("DEMO cleanup: detached descendants and zombies removed before reuse; explicit DestroySandbox removes the persistent cgroup tree")
 }
 
 func TestSandboxExecutionHasOnlyStdioAndReadOnlyProfile(t *testing.T) {
@@ -211,6 +213,7 @@ os.write(2, b'y' * (2 * 1024 * 1024))`)
 	if clean.ExitCode != 0 || clean.Stdout != "still-usable\n" {
 		t.Fatalf("Init did not survive failed Execution: %+v", clean)
 	}
+	t.Logf("DEMO output: failure exit=%d retained stderr; stdout=%d bytes stderr=%d bytes truncated=%t; same Sandbox executes again", failed.ExitCode, len(flood.Stdout), len(flood.Stderr), flood.Truncated)
 }
 
 func TestSandboxExecutionRejectsNulBeforeDisturbingWorkspace(t *testing.T) {

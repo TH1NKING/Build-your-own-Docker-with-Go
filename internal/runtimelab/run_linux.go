@@ -5,11 +5,17 @@
 package runtimelab
 
 import (
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
 	"flag"
 	"fmt"
+	"math"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"syscall"
@@ -34,6 +40,10 @@ var (
 // Main runs the Runtime Lab command.
 func Main() {
 	if len(os.Args) > 1 && os.Args[1] == "child-mode" {
+		if len(os.Args) < 6 {
+			fmt.Fprintln(os.Stderr, "runtime-lab: child-mode requires IP, rootfs, ID, and command")
+			os.Exit(2)
+		}
 		runChild()
 		return
 	}
@@ -54,30 +64,106 @@ func Main() {
 	} else {
 		cmdArgs = []string{"/bin/sh"}
 	}
+	if err := validateOptions(); err != nil {
+		fmt.Fprintln(os.Stderr, "runtime-lab:", err)
+		os.Exit(2)
+	}
 
 	if os.Geteuid() != 0 {
 		fmt.Println("Error: Must run as root")
 		os.Exit(1)
 	}
 
-	runParent()
+	os.Exit(runParent())
 }
 
-func runParent() {
-	contID := useID
-	if contID == "" {
-		contID = fmt.Sprintf("%x", time.Now().UnixNano())[:8]
+func validateOptions() error {
+	if useID != "" && !regexp.MustCompile(`^[0-9a-f]{8}$`).MatchString(useID) {
+		return errors.New("-id must contain exactly 8 lowercase hexadecimal characters")
+	}
+	ipText := containerIP
+	if !strings.Contains(ipText, "/") {
+		ipText += "/24"
+	}
+	prefix, err := netip.ParsePrefix(ipText)
+	bridgeSubnet := netip.MustParsePrefix("10.200.1.0/24")
+	if err != nil || !prefix.Addr().Is4() || prefix.Bits() != 24 || !bridgeSubnet.Contains(prefix.Addr()) {
+		return errors.New("IP must be an IPv4 address in 10.200.1.2 through 10.200.1.254, with optional /24")
+	}
+	last := prefix.Addr().As4()[3]
+	if last < 2 || last == 255 {
+		return errors.New("IP must not select the bridge, network, or broadcast address")
+	}
+	if cpuLimit < 0 || cpuLimit > math.MaxInt/1000 {
+		return errors.New("-c must be a nonnegative CPU percentage without quota overflow")
+	}
+	if memLimit != "" && memLimit != "max" {
+		parts := regexp.MustCompile(`^([1-9][0-9]*)([KMGTPE]?)$`).FindStringSubmatch(memLimit)
+		if parts == nil {
+			return errors.New("-m must be a positive byte count, optionally suffixed K, M, G, T, P, E, or max")
+		}
+		value, err := strconv.ParseUint(parts[1], 10, 64)
+		shift := uint(0)
+		if parts[2] != "" {
+			shift = uint(strings.Index("KMGTPE", parts[2])+1) * 10
+		}
+		if err != nil || value > math.MaxInt64>>shift {
+			return errors.New("-m exceeds the supported memory byte count")
+		}
+		memLimit = strconv.FormatUint(value<<shift, 10)
+	}
+	return nil
+}
+
+func allocateContainerDirectory(baseDir string) (string, string, error) {
+	containers := filepath.Join(baseDir, "containers")
+	if useID != "" {
+		directory := filepath.Join(containers, useID)
+		info, err := os.Lstat(directory)
+		if err != nil {
+			return "", "", fmt.Errorf("resume container %s: %w", useID, err)
+		}
+		if !info.IsDir() {
+			return "", "", errors.New("resume container must be an existing directory, not a symlink")
+		}
+		return useID, directory, nil
+	}
+	if err := os.MkdirAll(containers, 0o755); err != nil {
+		return "", "", err
+	}
+	for range 16 {
+		var random [4]byte
+		if _, err := rand.Read(random[:]); err != nil {
+			return "", "", err
+		}
+		id := hex.EncodeToString(random[:])
+		directory := filepath.Join(containers, id)
+		if err := os.Mkdir(directory, 0o755); err != nil {
+			if os.IsExist(err) {
+				continue
+			}
+			return "", "", err
+		}
+		return id, directory, nil
+	}
+	return "", "", errors.New("could not allocate a unique Runtime Lab container directory")
+}
+
+func runParent() int {
+	baseDir, err := os.Getwd()
+	must(err)
+	contID, conDir, err := allocateContainerDirectory(baseDir)
+	must(err)
+	if useID == "" {
 		fmt.Printf("=== Allocating New Container ID: %s ===\n", contID)
 	} else {
 		fmt.Printf("=== Resuming Container ID: %s ===\n", contID)
 	}
-
-	baseDir, _ := os.Getwd()
-	conDir := filepath.Join(baseDir, "containers", contID)
 	upperDir := filepath.Join(conDir, "upper")
 	workDir := filepath.Join(conDir, "work")
 	mergedDir := filepath.Join(conDir, "merged")
-	baseImage, _ := filepath.Abs(defaultRootFS)
+	baseImage, err := filepath.Abs(defaultRootFS)
+	must(err)
 
 	must(os.MkdirAll(upperDir, 0o755))
 	must(os.MkdirAll(workDir, 0o755))
@@ -88,6 +174,7 @@ func runParent() {
 		opts := fmt.Sprintf("lowerdir=%s,upperdir=%s,workdir=%s", baseImage, upperDir, workDir)
 		must(syscall.Mount("overlay", mergedDir, "overlay", 0, opts))
 	}
+	defer cleanup(contID, mergedDir)
 
 	args := []string{"child-mode", containerIP, mergedDir, contID}
 	args = append(args, cmdArgs...)
@@ -101,14 +188,31 @@ func runParent() {
 	}
 
 	must(cmd.Start())
+	defer func() {
+		// Setup failure must not strand the child waiting for its interface.
+		if cmd.ProcessState == nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		}
+	}()
 	pid := cmd.Process.Pid
 	fmt.Printf("Container started with Host PID: %d\n", pid)
 
 	setupCgroups(contID, pid)
 	setupNetwork(contID, pid)
 
-	_ = cmd.Wait()
-	cleanup(contID, mergedDir)
+	if err := cmd.Wait(); err != nil {
+		var exitError *exec.ExitError
+		if errors.As(err, &exitError) {
+			if status, ok := exitError.Sys().(syscall.WaitStatus); ok && status.Signaled() {
+				return 128 + int(status.Signal())
+			}
+			return exitError.ExitCode()
+		}
+		fmt.Fprintln(os.Stderr, "runtime-lab: wait for child:", err)
+		return 1
+	}
+	return 0
 }
 
 func runChild() {
@@ -153,8 +257,8 @@ func runChild() {
 
 func setupCgroups(id string, pid int) {
 	cgDir := filepath.Join(baseCgroup, id)
-	_ = os.MkdirAll(baseCgroup, 0o755)
-	_ = os.WriteFile(filepath.Join(baseCgroup, "cgroup.subtree_control"), []byte("+cpu +memory"), 0o644)
+	must(os.MkdirAll(baseCgroup, 0o755))
+	must(os.WriteFile(filepath.Join(baseCgroup, "cgroup.subtree_control"), []byte("+cpu +memory"), 0o644))
 
 	must(os.MkdirAll(cgDir, 0o755))
 
@@ -213,18 +317,18 @@ func waitForInterface() {
 }
 
 func mountProc(target string) {
-	_ = os.MkdirAll(target, 0o755)
-	_ = syscall.Mount("proc", target, "proc", 0, "")
+	must(os.MkdirAll(target, 0o755))
+	must(syscall.Mount("proc", target, "proc", 0, ""))
 }
 
 func mountSys(target string) {
-	_ = os.MkdirAll(target, 0o755)
-	_ = syscall.Mount("sysfs", target, "sysfs", 0, "")
+	must(os.MkdirAll(target, 0o755))
+	must(syscall.Mount("sysfs", target, "sysfs", 0, ""))
 }
 
 func mountTmpfs(target, name string) {
-	_ = os.MkdirAll(target, 0o755)
-	_ = syscall.Mount(name, target, "tmpfs", 0, "")
+	must(os.MkdirAll(target, 0o755))
+	must(syscall.Mount(name, target, "tmpfs", 0, ""))
 }
 
 func isMounted(dir string) bool {

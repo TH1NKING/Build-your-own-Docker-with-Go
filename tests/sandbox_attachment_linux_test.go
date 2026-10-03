@@ -148,6 +148,7 @@ func TestSandboxExecutionAttachmentsRejectMalformedDeclarations(t *testing.T) {
 	} {
 		assertSandboxSupervisorErrorCode(t, exchangeSandboxSupervisorMessage(t, fixture.socketPath, attachmentCreateRequest(t, "duplicate", identity, entries)), "invalid_reference")
 	}
+	t.Log("DEMO malicious declarations: traversal, absolute paths, duplicate inputs, host_path injection and malformed JSON rejected before creation")
 }
 
 func sandboxAttachmentStaging(t *testing.T, fixture sandboxSupervisorFixture) string {

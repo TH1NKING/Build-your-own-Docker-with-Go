@@ -35,6 +35,7 @@ print('privileges-stay-dropped')`)
 	if result.ExitCode != 0 || result.Stdout != "privileges-stay-dropped\n" {
 		t.Fatalf("Workload or exec descendant retained privileges: %+v", result)
 	}
+	t.Log("DEMO privileges: UID/GID=1000; supplementary groups and all capability sets empty; NoNewPrivs=1; exec descendants cannot regain root")
 }
 
 func TestSandboxExecutionSecurityAllowsPythonDataWorkAndThreads(t *testing.T) {
@@ -126,6 +127,7 @@ print('forbidden-operations-denied')`)
 	if clean.ExitCode != 0 || clean.Stdout != "clean\n" {
 		t.Fatalf("denials prevented clean sequential reuse: %+v", clean)
 	}
+	t.Log("DEMO malicious syscalls: namespace creation, mount, ptrace, BPF, policy relaxation and alternate ABIs denied with EPERM; same Sandbox remains usable")
 }
 
 func TestSandboxExecutionSecurityRejectsChangedPolicyBeforeCreation(t *testing.T) {
@@ -190,4 +192,5 @@ print('policy-enforced')`)
 	if clean.ExitCode != 0 || clean.Stdout != "still-usable\n" {
 		t.Fatalf("System Call Policy denial poisoned the Sandbox: %+v", clean)
 	}
+	t.Log("DEMO seccomp: Seccomp=2; harmless but unlisted getpriority returns EPERM; same Sandbox executes again")
 }

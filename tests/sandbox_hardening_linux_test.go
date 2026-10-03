@@ -244,7 +244,7 @@ print('network-syscalls-denied; no-routes')`)
 	if err := ingress.Wait(); err != nil {
 		t.Fatal("trusted netns listener failed:", err)
 	}
-	t.Log("positive host TCP control passed; independent netns ingress and egress probes failed as required")
+	t.Log("DEMO network=none: socket syscalls denied; only loopback and no routes; positive host TCP control passed; independent netns ingress and egress unreachable")
 }
 
 func TestSandboxHardeningNetworkProbe(t *testing.T) {

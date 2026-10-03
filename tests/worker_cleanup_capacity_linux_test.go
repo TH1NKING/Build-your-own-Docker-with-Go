@@ -152,6 +152,7 @@ func TestWorkerExecutionCleanupFailureRetainsCapacityAndStopsTheNode(t *testing.
 	if claimed, err := node.RunOnce(ctx); claimed || err == nil {
 		t.Fatalf("Worker continued accepting work after failed cleanup: claimed=%v err=%v", claimed, err)
 	}
+	t.Logf("DEMO capacity: injected Supervisor cleanup failure; durable result retained, occupied=%d available=%d, Worker stopped accepting work", capacity.Occupied, capacity.Available)
 	if err := repairAndRelease(); err != nil {
 		t.Fatal(err)
 	}
@@ -167,4 +168,5 @@ func TestWorkerExecutionCleanupFailureRetainsCapacityAndStopsTheNode(t *testing.
 		t.Fatalf("next Execution ran despite the stopped Worker: %+v %v", next, err)
 	}
 	assertNoResourceCgroups(t)
+	t.Logf("DEMO capacity: confirmed cleanup restored available=%d; stopped Worker still refused new work, next Execution state=%s", capacity.Available, next.State)
 }

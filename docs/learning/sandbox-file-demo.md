@@ -4,11 +4,11 @@
 
 ## 准备一次
 
-在专用、可丢弃的 Linux 环境中进入仓库根目录。需要满足 `go.mod` 的 Go 工具链、Bash、util-linux、iproute2、sudo，以及可委派 `cpu memory pids` 的 cgroup v2。下载阶段还需要 curl、CA 证书和 jq；Ubuntu 可以先安装辅助工具：
+在专用、可丢弃的 Linux 环境中进入仓库根目录。需要满足 `go.mod` 的 Go 工具链、Bash、util-linux、iproute2、sudo，以及可委派 `cpu memory pids` 的 cgroup v2。下载阶段使用 Python 3 和 CA 证书；Ubuntu 可以先安装辅助工具：
 
 ```bash
 sudo apt update &&
-sudo apt install -y curl ca-certificates jq util-linux iproute2
+sudo apt install -y python3 ca-certificates util-linux iproute2
 ```
 
 **运行演示前，必须先下载并校验 Python Profile 的两份输入归档。** `git clone` 不包含 `.cache`，Go 自动下载的模块也不包含这两份运行时文件。先指定当前 checkout 的缓存位置：

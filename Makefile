@@ -1,8 +1,8 @@
-.PHONY: build check fmt-check shell-check test test-migrations test-worker-api test-worker-execution test-sandbox-creation test-sandbox-init test-sandbox-acceptance vet
+.PHONY: build check fmt-check shell-check demo-check demo-prepare demo-doctor demo demo-verify test test-migrations test-worker-api test-worker-execution test-sandbox-creation test-sandbox-init test-sandbox-acceptance vet
 
 GO_FILES := $(shell find . -type f -name '*.go' -not -path './.git/*' -not -path './.cache/*')
 
-check: fmt-check vet test build shell-check
+check: fmt-check vet test build shell-check demo-check
 
 fmt-check:
 	@unformatted="$$(gofmt -l $(GO_FILES))"; \
@@ -33,13 +33,34 @@ build:
 	go build ./...
 
 shell-check:
-	bash -n with_shell/*.sh
+	@for script in with_shell/*.sh; do bash -n "$$script" || exit; done
 	bash -n tests/run-sandbox-creation-linux.sh
 	bash -n tests/run-sandbox-init-linux.sh
 	bash -n tests/run-sandbox-acceptance-linux.sh
 	bash -n tests/run-sandbox-file-demo-linux.sh
 	bash -n tests/run-worker-execution-linux.sh
 	bash -n tests/sandbox-cgroup-fixture.sh
+	bash -n tests/run-interview-demo-linux.sh
+	bash -n tests/run-runtime-lab-demo-linux.sh
+	bash -n tests/run-sandbox-demo-linux.sh
+	bash -n tests/run-worker-demo-linux.sh
+	bash -n tests/sandbox-test-result.sh
+
+demo-check:
+	python3 -B -m unittest discover -s tests -p 'test_*.py'
+	bash tests/worker-demo-contract-test.sh
+
+demo-prepare:
+	bash tests/run-interview-demo-linux.sh prepare
+
+demo-doctor:
+	bash tests/run-interview-demo-linux.sh doctor
+
+demo:
+	bash tests/run-interview-demo-linux.sh run $(or $(SCENARIO),all)
+
+demo-verify:
+	bash tests/run-interview-demo-linux.sh verify
 
 test-sandbox-creation:
 	bash tests/run-sandbox-creation-linux.sh

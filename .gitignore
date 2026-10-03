@@ -24,6 +24,7 @@ coverage/
 coverage.out
 *.exe
 *.test
+__pycache__/
 
 # Mutable Runtime Lab state
 **/rootfs/

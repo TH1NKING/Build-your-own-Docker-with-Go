@@ -1,8 +1,14 @@
 # Build Your Own Docker with Go
 
-这个仓库以一个可运行的 Linux Runtime Lab 为起点，逐步实现面向 Agent 的安全代码执行平台。当前 Go 与 Shell 实现都是学习和验证 Linux 容器原语的实验代码，不是生产级容器运行时或安全沙箱。
+这个仓库包含两层实现：Runtime Lab 用 Go 与 Shell 展示 Linux 容器原语；Agent Sandbox 原型在此基础上提供受限 Python 执行、文件与资源边界，以及 PostgreSQL 队列、Worker 容量和有界断连恢复。当前不是生产级容器运行时或完整 Agent 平台，具体实现与验证边界见下文。
 
 > **安全边界：** Runtime Lab 会以 root 权限操作 namespace、OverlayFS、cgroup 和宿主机网络。只应在专用 Linux 虚拟机或其他可丢弃环境中运行；不要用它执行不受信任的代码。
+
+## 面试演示
+
+针对 VMware Ubuntu 的 [演示手册](docs/interview-demo.md) 将简历主张对应到真实 Linux / PostgreSQL 场景，包含前置检查、离线准备、讲解顺序、成功判据和故障定位。先以普通用户运行 `make demo-prepare`；刷新 `sudo -v` 后运行 `make demo-doctor`。配置专用测试数据库并通过 `make demo-verify` 后，现场用 `make demo SCENARIO=files` 开始，也可选择 `runtime`、`lifecycle`、`security`、`resources`、`worker`、`capacity`、`recovery`、`expiry`。
+
+准备好的源码和产物摘要必须匹配；所有演示拒绝零测试、跳过和缺少必需用例，每次运行保留新日志。`make demo` 运行全部演示，不能代替整体验收。当前能力和原型边界以演示手册及下文为准。
 
 ## 仓库结构
 
@@ -29,7 +35,7 @@
 - 构建与测试支持基线是 GitHub-hosted `ubuntu-latest`；其他 Linux 发行版需要提供等价工具。
 - Go 版本以 [`go.mod`](go.mod) 为准。
 - Linux 内核支持 user/mount/PID/network namespace、OverlayFS 和 cgroup v2。
-- 命令行提供 `bash`、`ip`、`iptables`、`mountpoint` 和 `unshare`。
+- 命令行提供 `bash`、`make`、`python3`、iproute2 的 `ip`、`iptables`、`mountpoint` 和 `unshare`。
 - 实际启动 Runtime Lab 时需要 root 权限，并在当前工作目录准备 `rootfs/`。
 
 ## 构建与验证
@@ -104,17 +110,20 @@ go run ./cmd/runtime-lab --help
 go run ./with_Go --help
 ```
 
-在已经准备好 `rootfs/` 的专用 Linux 环境中启动实验容器：
+在已经准备好 `rootfs/` 的专用 Linux 环境中先构建命令：
 
 ```sh
-sudo go run ./cmd/runtime-lab [-m 100M] [-c 20] <IP> [COMMAND...]
+mkdir -p .cache/runtime-lab
+go build -o .cache/runtime-lab/runtime-lab ./cmd/runtime-lab
 ```
 
-例如：
+再启动实验容器：
 
 ```sh
-sudo go run ./cmd/runtime-lab -m 100M -c 20 10.200.1.2 /bin/sh
+sudo .cache/runtime-lab/runtime-lab -m 100M -c 20 10.200.1.2 /bin/sh
 ```
+
+构建以普通用户执行，避免 sudo 的 PATH 找不到 Go 或现场重新下载工具链。IP 使用固定 bridge 子网 `10.200.1.2`–`10.200.1.254`；`-id` 只接受已存在的 8 位小写十六进制容器目录，且只应在前一次执行退出后串行恢复。无效参数在分配资源前拒绝，容器退出码会传给调用者。需要自动准备 rootfs 并隔离宿主网络的面试演示时，使用 `make demo SCENARIO=runtime`。
 
 运行产生的 `containers/` 和 `rootfs/` 是本地可变状态，不纳入版本控制。
 
