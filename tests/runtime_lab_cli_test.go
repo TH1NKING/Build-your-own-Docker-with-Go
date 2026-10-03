@@ -3,12 +3,57 @@
 package workspace_test
 
 import (
+	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 )
+
+func TestRuntimeLabRejectsInvalidOptionsBeforeAllocating(t *testing.T) {
+	binary := filepath.Join(t.TempDir(), "runtime-lab")
+	build := exec.Command("go", "build", "-o", binary, "./cmd/runtime-lab")
+	build.Dir = repositoryRoot(t)
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build Runtime Lab: %v\n%s", err, output)
+	}
+	for _, test := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"traversal-id", []string{"-id", "../escape", "10.200.1.2"}, "-id must contain"},
+		{"long-id", []string{"-id", "abcdefabcdef", "10.200.1.2"}, "-id must contain"},
+		{"bad-ip", []string{"not-an-ip"}, "IP must be an IPv4"},
+		{"wrong-subnet", []string{"192.168.1.2"}, "IP must be an IPv4"},
+		{"wrong-prefix", []string{"10.200.1.2/16"}, "IP must be an IPv4"},
+		{"gateway", []string{"10.200.1.1"}, "bridge, network, or broadcast"},
+		{"broadcast", []string{"10.200.1.255"}, "bridge, network, or broadcast"},
+		{"negative-cpu", []string{"-c", "-1", "10.200.1.2"}, "-c must be a nonnegative"},
+		{"negative-memory", []string{"-m", "-1", "10.200.1.2"}, "-m must be a positive"},
+		{"malformed-memory", []string{"-m", "100MB", "10.200.1.2"}, "-m must be a positive"},
+		{"overflow-memory", []string{"-m", "18446744073709551616G", "10.200.1.2"}, "-m exceeds"},
+		{"missing-child-arguments", []string{"child-mode"}, "child-mode requires"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			directory := t.TempDir()
+			command := exec.Command(binary, test.args...)
+			command.Dir = directory
+			output, err := command.CombinedOutput()
+			if err == nil || command.ProcessState.ExitCode() != 2 {
+				t.Fatalf("want usage exit 2, got %v: %s", err, output)
+			}
+			if !strings.Contains(string(output), test.want) {
+				t.Fatalf("want %q in output: %s", test.want, output)
+			}
+			entries, err := os.ReadDir(directory)
+			if err != nil || len(entries) != 0 {
+				t.Fatalf("invalid command changed its working directory: %v, %v", entries, err)
+			}
+		})
+	}
+}
 
 func TestGoRuntimeLabCommandsExposeHelp(t *testing.T) {
 	repositoryRoot := repositoryRoot(t)

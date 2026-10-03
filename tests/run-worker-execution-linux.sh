@@ -5,6 +5,21 @@ set -euo pipefail
 # reach the dedicated PostgreSQL instance. Each Workload still receives its own
 # Network Policy none namespace from the real Sandbox Supervisor.
 repository_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$repository_root/tests/run-worker-demo-linux.sh"
+suite=acceptance
+if [[ $# != 0 ]]; then
+  if [[ $# != 2 || "$1" != --demo ]]; then
+    echo "Usage: $0 [--demo normal|capacity|recovery|expiry|all]" >&2
+    exit 2
+  fi
+  case "$2" in
+    normal|capacity|recovery|expiry|all) suite="$2" ;;
+    *) echo "Unknown Worker demo: $2" >&2; exit 2 ;;
+  esac
+fi
+test_selector="$(worker_demo_selector "$suite")"
+required_inventory="$(worker_demo_required_tests "$suite")"
+mapfile -t required_tests <<< "$required_inventory"
 [[ -n "${AGENT_TEST_DATABASE_URL:-}" ]] || {
   echo 'AGENT_TEST_DATABASE_URL must point to a dedicated test PostgreSQL instance' >&2
   exit 1
@@ -52,6 +67,7 @@ done
 {
   uname -sr
   date -u +%Y-%m-%dT%H:%M:%SZ
+  printf 'Worker suite: %s\nTest selector: %s\n' "$suite" "$test_selector"
   sha256sum "$sandbox_bin_dir/sandboxd" "$sandbox_bin_dir/worker" "$sandbox_bin_dir/t05-tests" "$sandbox_bin_dir/python.bundle"
 } > "$log_dir/environment.log"
 
@@ -78,37 +94,13 @@ if [[ "$EUID" != 0 ]]; then privilege=(sudo -n); fi
     export WORKER_CLI=/tmp/worker-bin/worker
     export PROFILE_BUNDLE_CLI=/tmp/worker-bin/profile-bundle SANDBOX_EXECUTION_BUNDLE=/tmp/worker-bin/python.bundle
     uname -sr
-    /tmp/worker-bin/t05-tests -test.v -test.run="^(TestWorkerExecution|TestSandboxInspection)" -test.timeout=300s
-  ' worker-execution "$sandbox_bin_dir" "${SANDBOX_TEST_CGROUP_PARENT:-}" \
+    /tmp/worker-bin/t05-tests -test.v -test.run="$3" -test.timeout=300s
+  ' worker-execution "$sandbox_bin_dir" "${SANDBOX_TEST_CGROUP_PARENT:-}" "$test_selector" \
   2>&1 | tee "$log_dir/execution.log"
 
-if grep -Eq '^[[:space:]]*--- SKIP:' "$log_dir/execution.log"; then
-  echo 'Worker acceptance must not skip tests' >&2
-  exit 1
+worker_require_passing_tests "$log_dir/execution.log" "${required_tests[@]}"
+if [[ "$suite" == acceptance ]]; then
+  printf '%s\n' 'T24_WORKER_EXECUTION_PASS' | tee "$log_dir/result.log"
+else
+  printf 'WORKER_DEMO_%s_PASS (%d required tests, no skips)\n' "${suite^^}" "${#required_tests[@]}" | tee "$log_dir/result.log"
 fi
-required_tests=(
-  TestWorkerExecutionRunsPythonAndReportsItsBoundedResult
-  TestWorkerExecutionRetriesLostAcknowledgementWithoutRunningPythonAgain
-  TestWorkerExecutionCommandUsesAnUnprivilegedAccountAndPrivateCA
-  TestWorkerExecutionPreservesDeclaredBinaryOutputs
-  TestWorkerExecutionCapacityRunsTwoSandboxesAndQueuesTheThird
-  TestWorkerExecutionCleanupFailureRetainsCapacityAndStopsTheNode
-  TestWorkerExecutionRecoversTheSameSandboxAfterHTTPSDisconnection
-  TestWorkerExecutionRecoveryExpiryCleansUpWithoutReplayingWork
-  TestWorkerExecutionHealthyHeartbeatsDoNotHideReportFailure
-  TestWorkerExecutionCommittedResultAcknowledgementHasABoundedWait
-  TestSandboxInspectionRequiresTheOriginalLiveSandbox
-  TestSandboxInspectionDuringExecutionDoesNotCancelTheWorkload
-  TestSandboxInspectionRejectsLostInitDespiteRetainedResult
-)
-for required_test in "${required_tests[@]}"; do
-  if ! grep -Eq "^--- PASS: $required_test " "$log_dir/execution.log"; then
-    echo "Worker acceptance did not pass $required_test; rebuild test commands" >&2
-    exit 1
-  fi
-done
-if ! grep -Eq '^PASS$' "$log_dir/execution.log"; then
-  echo 'Worker acceptance did not finish successfully' >&2
-  exit 1
-fi
-printf '%s\n' 'T24_WORKER_EXECUTION_PASS' | tee "$log_dir/result.log"

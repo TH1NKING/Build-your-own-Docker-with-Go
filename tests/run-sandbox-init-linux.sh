@@ -4,6 +4,7 @@ set -euo pipefail
 # Real Python acceptance through the Supervisor protocol in a disposable Linux
 # mount/PID/network namespace. Locked sources must already be downloaded.
 repository_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$repository_root/tests/sandbox-test-result.sh"
 if [[ -z "${SANDBOX_TEST_BIN_DIR:-}" ]]; then
   sandbox_bin_dir="$repository_root/.cache/sandbox-init"
   source_cache="${PROFILE_BUNDLE_SOURCE_CACHE:-$repository_root/.cache/profile-sources}"
@@ -29,9 +30,37 @@ for binary in sandboxd sandbox-init sandbox-waiting-init profile-bundle t05-test
   [[ -x "$sandbox_bin_dir/$binary" ]] || { echo "Missing executable: $sandbox_bin_dir/$binary" >&2; exit 1; }
 done
 [[ -f "$sandbox_bin_dir/python.bundle" ]] || { echo 'Missing python.bundle' >&2; exit 1; }
+selector="${SANDBOX_TEST_RUN:-^TestSandbox(Execution|Lifecycle)}"
+# List before entering namespaces so stale or mismatched binaries fail before
+# privileged setup. Go separates a subtest selector with '/', if supplied.
+inventory="$("$sandbox_bin_dir/t05-tests" -test.list="${selector%%/*}")"
+mapfile -t selected_tests < <(printf '%s\n' "$inventory" | grep -E '^Test[^[:space:]]+$')
+if (( ${#selected_tests[@]} == 0 )); then
+  printf 'No Sandbox tests match %s; rebuild binaries from this checkout.\n' "$selector" >&2
+  exit 1
+fi
+while IFS= read -r required_test; do
+  [[ -z "$required_test" ]] && continue
+  if ! printf '%s\n' "$inventory" | grep -Fxq -- "$required_test"; then
+    printf 'Missing required contract in test binary: %s; rebuild binaries from this checkout.\n' "$required_test" >&2
+    exit 1
+  fi
+done <<< "${SANDBOX_TEST_REQUIRED_TESTS:-}"
+log_parent="${SANDBOX_TEST_LOG_DIR:-${SANDBOX_DEMO_LOG_DIR:-$repository_root/.cache/sandbox-tests}}"
+mkdir -p -- "$log_parent"
+log_parent="$(cd -- "$log_parent" && pwd)"
+log_directory="$(mktemp -d "$log_parent/run-$(date -u +%Y%m%dT%H%M%SZ)-XXXXXX")"
+printf 'Sandbox test logs: %s\n' "$log_directory"
+{
+  uname -sr
+  printf 'Selector: %s\n' "$selector"
+  printf 'Expected contracts: %s\n' "${#selected_tests[@]}"
+  printf 'Binary directory: %s\n' "$sandbox_bin_dir"
+  (cd -- "$sandbox_bin_dir" && sha256sum sandboxd sandbox-init t05-tests python.bundle)
+} > "$log_directory/environment.log"
 privilege=()
 if [[ "$EUID" != 0 ]]; then privilege=(sudo -n); fi
-exec "${privilege[@]}" unshare --mount --pid --fork --mount-proc --net --propagation private \
+sandbox_run_logged "$log_directory/execution.log" "${privilege[@]}" unshare --mount --pid --fork --mount-proc --net --propagation private \
   bash -c '
     set -euo pipefail
     # Stdin carries the trusted helper across sudo and a covered host /tmp.
@@ -48,4 +77,6 @@ exec "${privilege[@]}" unshare --mount --pid --fork --mount-proc --net --propaga
     export PROFILE_BUNDLE_CLI=/tmp/t05-bin/profile-bundle SANDBOX_EXECUTION_BUNDLE=/tmp/t05-bin/python.bundle
     uname -sr
     /tmp/t05-bin/t05-tests -test.v -test.run="${3:-^TestSandbox(Execution|Lifecycle)}" -test.timeout=300s
-  ' sandbox-init "$sandbox_bin_dir" "${SANDBOX_TEST_CGROUP_PARENT:-}" "${SANDBOX_TEST_RUN:-}" < "$repository_root/tests/sandbox-cgroup-fixture.sh"
+  ' sandbox-init "$sandbox_bin_dir" "${SANDBOX_TEST_CGROUP_PARENT:-}" "$selector" < "$repository_root/tests/sandbox-cgroup-fixture.sh"
+sandbox_require_passed_tests "$log_directory/execution.log" "${selected_tests[@]}"
+printf 'Sandbox tests PASS (%s contracts; no skipped tests)\n' "${#selected_tests[@]}" | tee "$log_directory/result.log"

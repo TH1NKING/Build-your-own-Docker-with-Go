@@ -50,6 +50,7 @@ print('detail', file=__import__('sys').stderr)`, nil)
 		t.Fatalf("Control Plane did not retain the bounded Execution Result: %+v", result)
 	}
 	assertNoResourceCgroups(t)
+	t.Logf("DEMO normal: Python uid=1000, exit_code=%d, stdout_bytes=%d, stdout_truncated=%v; result persisted and cgroups cleaned", result.ExitCode, len(result.Stdout), result.StdoutTruncated)
 }
 
 func TestWorkerExecutionRetriesLostAcknowledgementWithoutRunningPythonAgain(t *testing.T) {
@@ -124,6 +125,7 @@ print(os.urandom(32).hex())`, func(next http.Handler) http.Handler {
 	// Re-executing in the same Sandbox fails exclusive creation; executing in
 	// another Sandbox generates a different nonce and changes the report bytes.
 	assertNoResourceCgroups(t)
+	t.Logf("DEMO recovery: committed result lost its HTTPS acknowledgement; %d byte-identical reports retained the original successful result without replay", len(reports))
 }
 
 func TestWorkerExecutionCommandUsesAnUnprivilegedAccountAndPrivateCA(t *testing.T) {
@@ -193,6 +195,7 @@ func TestWorkerExecutionCommandUsesAnUnprivilegedAccountAndPrivateCA(t *testing.
 		t.Fatalf("unprivileged Worker did not persist its Execution Result: %+v, %v", record, err)
 	}
 	assertNoResourceCgroups(t)
+	t.Log("DEMO normal: root Worker launch rejected; Worker command ran as uid=65534 with a private CA, used the privileged Supervisor, and persisted its result")
 }
 
 func TestWorkerExecutionPreservesDeclaredBinaryOutputs(t *testing.T) {
@@ -222,6 +225,7 @@ open('blob.bin', 'wb').write(bytes([0, 1, 2, 255, 0]))`, nil, "blob.bin")
 		t.Fatalf("declared binary snapshot changed before reaching the Control Plane: %+v", output)
 	}
 	assertNoResourceCgroups(t)
+	t.Logf("DEMO normal: NUL stdout/stderr preserved; declared blob.bin retained %d binary bytes with verified SHA-256", output.Size)
 }
 
 func workerExecutionControlPlane(t *testing.T, source string, intercept func(http.Handler) http.Handler, outputPaths ...string) (*workerapi.Client, func() sandboxsupervisor.ExecutePythonResult) {

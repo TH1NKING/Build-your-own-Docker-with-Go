@@ -140,64 +140,29 @@ the Alpine archive containing its musl loader. Git does not include this cache,
 Go module downloads do not provide these archives, and `profile-bundle build`
 only reads and verifies local files; it never downloads a missing source.
 
-Run the following block in **Bash from the repository root**, as your ordinary
-account. It requires `curl`, `jq`, `sha256sum` and `stat` (GNU coreutils).
-On Ubuntu, install the download tools with:
+Run this from the repository root as your ordinary account, with Python 3
+and CA certificates installed:
 
 ```bash
-sudo apt update && sudo apt install -y curl ca-certificates jq
+python3 tests/prepare-profile-sources.py
 ```
 
-The default destination is `.cache/profile-sources` in this checkout. To use a
-different cache, set `PROFILE_BUNDLE_SOURCE_CACHE` to an absolute path before
-running the block and retain that setting when building or running the demo.
+The default destination is `.cache/profile-sources` in this checkout. Set
+`PROFILE_BUNDLE_SOURCE_CACHE` to an absolute path to share an existing cache.
 Setting the variable alone does not download or create any source file.
 
-```bash
-(
-  set -euo pipefail
-  lock=profiles/python-data-v1/profile.lock.json
-  if [[ ! -f "$lock" ]]; then
-    echo 'Run this block from the repository root.' >&2
-    exit 1
-  fi
-  cache="${PROFILE_BUNDLE_SOURCE_CACHE:-$PWD/.cache/profile-sources}"
-  mkdir -p -- "$cache"
-  cache="$(cd -- "$cache" && pwd)"
+The helper reads URLs, exact sizes and SHA-256 from the lock. It reuses verified
+files, downloads missing or corrupt inputs to unique `.part` files, and only
+publishes the final filename after validation. Unsafe filenames, links,
+oversized or truncated downloads, non-HTTPS redirects and digest mismatches
+fail explicitly; retries are bounded and never publish incomplete content.
+Proceed only after `PROFILE_SOURCES_READY`.
 
-  verify_source() {
-    [[ -f "$1" && "$(stat -c %s -- "$1")" == "$2" ]] &&
-      printf '%s  %s\n' "${3#sha256:}" "$1" |
-      sha256sum --check --status
-  }
-
-  jq -er '.inputs[] | [.source, .filename, (.size | tostring), .digest] | @tsv' "$lock" |
-  while IFS=$'\t' read -r url filename size digest; do
-    target="$cache/$filename"
-    if verify_source "$target" "$size" "$digest"; then
-      printf 'Verified cached source: %s\n' "$filename"
-      continue
-    fi
-
-    curl --http1.1 --fail --location --retry 3 \
-      --output "$target.part" "$url"
-    if ! verify_source "$target.part" "$size" "$digest"; then
-      printf 'Source size or SHA-256 mismatch: %s\n' "$filename" >&2
-      exit 1
-    fi
-    mv -T -- "$target.part" "$target"
-    printf 'Downloaded and verified source: %s\n' "$filename"
-  done
-  echo PROFILE_SOURCES_READY
-)
-```
-
-Proceed only after `PROFILE_SOURCES_READY`. Existing files are reused only
-after their exact byte size and SHA-256 match the lock. A download is first
-written to `.part` and receives its final filename only after verification;
-an interrupted download or mismatch stops the block. A leftover `.part` is not
-a usable source. Re-running the block retries missing or invalid inputs without
-re-downloading valid cached files.
+Use `python3 tests/prepare-profile-sources.py --check` for a read-only,
+network-free cache check. `--timeout` and `--retries` bound preparation attempts;
+see `--help`. CI uses the same helper instead of maintaining copied URLs and
+hashes. The [interview walkthrough](interview-demo.md) also prepares binaries
+and rejects source/artifact drift before using them offline.
 
 These are preparation-stage downloads outside the Sandbox. The later Go build
 may separately download Go modules, while Bundle assembly itself stays offline.

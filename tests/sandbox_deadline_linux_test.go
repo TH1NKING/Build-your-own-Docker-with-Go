@@ -64,6 +64,7 @@ print('clean')`)
 	if ordinary.ExitCode != 137 || ordinary.TerminalReason != "exited" {
 		t.Fatalf("ordinary exit code was mistaken for deadline termination: %+v", ordinary)
 	}
+	t.Logf("DEMO timeout: 500ms budget -> reason=%s exit=%d elapsed=%s; Execution cgroup removed; Init PID=%s and Workspace preserved; explicit exit 137 remains reason=exited", response.Result.TerminalReason, response.Result.ExitCode, elapsed.Round(time.Millisecond), initPID)
 }
 
 func TestSandboxExecutionDeadlineKillsDetachedOutputWritersBeforeRepeatedReuse(t *testing.T) {
